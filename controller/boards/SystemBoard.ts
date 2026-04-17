@@ -2633,7 +2633,7 @@ export class CircuitCommands extends BoardCommands {
     public setLightColorAsync(id: number, color: { red: number; green: number; blue: number }): Promise<ICircuitState> {
         return Promise.reject(new InvalidOperationError(`Light color control is not supported for circuit ${id}`, 'setLightColorAsync'));
     }
-    public getCircuitReferences(includeCircuits?: boolean, includeFeatures?: boolean, includeVirtual?: boolean, includeGroups?: boolean) {
+    public getCircuitReferences(includeCircuits?: boolean, includeFeatures?: boolean, includeVirtual?: boolean, includeGroups?: boolean, pumpCircuitsOnly?: boolean) {
         let arrRefs = [];
         if (includeCircuits) {
             // RSG: converted this to getItemByIndex because hasHeatSource isn't actually stored as part of the data
@@ -2653,6 +2653,7 @@ export class CircuitCommands extends BoardCommands {
             let vcs = sys.board.valueMaps.virtualCircuits.toArray();
             for (let i = 0; i < vcs.length; i++) {
                 let c = vcs[i];
+                if (pumpCircuitsOnly && c.assignableToPumpCircuit === false) continue;
                 arrRefs.push({ id: c.val, name: c.desc, equipmentType: 'virtual', assignableToPumpCircuit: c.assignableToPumpCircuit });
             }
         }

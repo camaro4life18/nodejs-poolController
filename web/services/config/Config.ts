@@ -307,7 +307,7 @@ export class ConfigRoute {
                         vsf: sys.board.valueMaps.pumpVSFModels.toArray(),
                         vssvrs: sys.board.valueMaps.pumpVSSVRSModels.toArray()
                     },
-                    circuits: sys.board.circuits.getCircuitReferences(true, true, true, true),
+                    circuits: sys.board.circuits.getCircuitReferences(true, true, true, true, true),
                     bodies: sys.board.valueMaps.pumpBodies.toArray(),
                     pumps: sys.pumps.get(),
                     servers: await sys.ncp.getREMServers(),

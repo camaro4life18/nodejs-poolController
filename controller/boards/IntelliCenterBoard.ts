@@ -48,7 +48,7 @@ export class IntelliCenterBoard extends SystemBoard {
         this.equipmentIds.virtualCircuits = new EquipmentIdRange(function () { return this.start; }, function () { return 254; });
         this.equipmentIds.features.start = 129;
         this.equipmentIds.circuitGroups.start = 193;
-        this.equipmentIds.virtualCircuits.start = 237;
+        this.equipmentIds.virtualCircuits.start = 234;
         this.valueMaps.panelModes = new byteValueMap([
             [0, { val: 0, name: 'auto', desc: 'Auto' }],
             [1, { val: 1, name: 'service', desc: 'Service' }],
@@ -154,19 +154,22 @@ export class IntelliCenterBoard extends SystemBoard {
         ]);
 
         this.valueMaps.virtualCircuits = new byteValueMap([
-            [237, { name: 'heatBoost', desc: 'Heat Boost' }],
-            [238, { name: 'heatEnable', desc: 'Heat Enable' }],
-            [239, { name: 'pumpSpeedUp', desc: 'Pump Speed +' }],
-            [240, { name: 'pumpSpeedDown', desc: 'Pump Speed -' }],
-            [244, { name: 'poolHeater', desc: 'Pool Heater' }],
-            [245, { name: 'spaHeater', desc: 'Spa Heater' }],
-            [246, { name: 'freeze', desc: 'Freeze' }],
-            [247, { name: 'poolSpa', desc: 'Pool/Spa' }],
-            [248, { name: 'solarHeat', desc: 'Solar Heat' }],
-            [251, { name: 'heater', desc: 'Heater' }],
-            [252, { name: 'solar', desc: 'Solar' }],
-            [255, { name: 'poolHeatEnable', desc: 'Pool Heat Enable' }],
-            [258, { name: 'anyHeater', desc: 'Any Heater' }]
+            [234, { name: 'heatPump', desc: 'Heat Pump', assignableToPumpCircuit: true }],
+            [235, { name: 'ultraTemp', desc: 'UltraTemp', assignableToPumpCircuit: true }],
+            [236, { name: 'hybrid', desc: 'Hybrid', assignableToPumpCircuit: true }],
+            [237, { name: 'heatBoost', desc: 'Heat Boost', assignableToPumpCircuit: false }],
+            [238, { name: 'heatEnable', desc: 'Heat Enable', assignableToPumpCircuit: false }],
+            [239, { name: 'pumpSpeedUp', desc: 'Pump Speed +', assignableToPumpCircuit: false }],
+            [240, { name: 'pumpSpeedDown', desc: 'Pump Speed -', assignableToPumpCircuit: false }],
+            [244, { name: 'poolHeater', desc: 'Pool Heater', assignableToPumpCircuit: true }],
+            [245, { name: 'spaHeater', desc: 'Spa Heater', assignableToPumpCircuit: true }],
+            [246, { name: 'freeze', desc: 'Freeze', assignableToPumpCircuit: true }],
+            [247, { name: 'poolSpa', desc: 'Pool/Spa', assignableToPumpCircuit: true }],
+            [248, { name: 'solarHeat', desc: 'Solar Heat', assignableToPumpCircuit: false }],
+            [251, { name: 'heater', desc: 'Heater', assignableToPumpCircuit: true }],
+            [252, { name: 'solar', desc: 'Solar', assignableToPumpCircuit: true }],
+            [255, { name: 'poolHeatEnable', desc: 'Pool Heat Enable', assignableToPumpCircuit: false }],
+            [258, { name: 'anyHeater', desc: 'Any Heater', assignableToPumpCircuit: false }]
         ]);
         this.valueMaps.msgBroadcastActions.merge([
             [1, { name: 'ack', desc: 'Command Ack' }],
@@ -1905,7 +1908,8 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
                     theme,
                     eggHrs, eggMins, data.dontStop ? 1 : 0]
             });
-            out.appendPayloadString(typeof data.name !== 'undefined' ? data.name.toString() : circuit.name, 16);
+            let circuitNameStr = typeof data.name !== 'undefined' ? data.name.toString().substring(0, 15) : circuit.name;
+            out.appendPayloadString(circuitNameStr, 16);
             out.retries = 5;
             out.response = IntelliCenterBoard.getAckResponse(168);
             await out.sendAsync();
@@ -1923,7 +1927,7 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
                     circuit.lightingTheme = 0;
                 }
             }
-            scircuit.name = circuit.name = typeof data.name !== 'undefined' ? data.name.toString().substring(0, 16) : circuit.name;
+            scircuit.name = circuit.name = circuitNameStr;
             scircuit.type = circuit.type = type;
             scircuit.isActive = circuit.isActive = true;
             circuit.master = 0;
@@ -3104,16 +3108,17 @@ class IntelliCenterFeatureCommands extends FeatureCommands {
                 (typeof data.showInFeatures !== 'undefined' ? utils.makeBool(data.showInFeatures) : feature.showInFeatures) ? 1 : 0,
                 eggHrs, eggMins, data.dontStop ? 1 : 0]
         });
-        out.appendPayloadString(typeof data.name !== 'undefined' ? data.name.toString() : feature.name, 16);
+        let nameStr = typeof data.name !== 'undefined' ? data.name.toString().substring(0, 15) : feature.name;
+        out.appendPayloadString(nameStr, 16);
         await out.sendAsync();
         feature = sys.features.getItemById(id, true);
         let fstate = state.features.getItemById(id, true);
 
         feature.eggTimer = eggTimer;
         feature.dontStop = data.dontStop;
-        feature.freeze = (typeof data.freeze !== 'undefined' ? utils.makeBool(data.freeze) : feature.freeze);
+        fstate.freezeProtect = feature.freeze = (typeof data.freeze !== 'undefined' ? utils.makeBool(data.freeze) : feature.freeze);
         fstate.showInFeatures = feature.showInFeatures = (typeof data.showInFeatures !== 'undefined' ? utils.makeBool(data.showInFeatures) : feature.showInFeatures);
-        fstate.name = feature.name = typeof data.name !== 'undefined' ? data.name.toString().substring(0, 16) : feature.name;
+        fstate.name = feature.name = nameStr;
         fstate.type = feature.type = typeof data.type !== 'undefined' ? parseInt(data.type, 10) : feature.type;
         fstate.emitEquipmentChange();
         return feature;
