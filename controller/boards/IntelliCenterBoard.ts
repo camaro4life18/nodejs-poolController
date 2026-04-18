@@ -2716,8 +2716,20 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
     public async setCircuitGroupStateAsync(id: number, val: boolean): Promise<ICircuitGroupState> {
         let grp = sys.circuitGroups.getItemById(id, false, { isActive: false });
         let gstate = (grp.dataName === 'circuitGroupConfig') ? state.circuitGroups.getItemById(grp.id, grp.isActive !== false) : state.lightGroups.getItemById(grp.id, grp.isActive !== false);
+        let isLightGroup = grp.dataName === 'lightGroupConfig';
+        if (isLightGroup && val) {
+            let nop = sys.board.valueMaps.circuitActions.getValue('settheme');
+            (gstate as LightGroupState).action = nop;
+            gstate.emitEquipmentChange();
+        }
         try {
             await sys.board.circuits.setCircuitStateAsync(id, val);
+            if (isLightGroup && val) {
+                setTimeout(() => {
+                    (gstate as LightGroupState).action = 0;
+                    gstate.emitEquipmentChange();
+                }, 15000);
+            }
             return state.circuitGroups.getInterfaceById(id);
         }
         catch (err) { return Promise.reject(err); }
@@ -2727,6 +2739,9 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
         try {
             let group = sys.lightGroups.getItemById(id);
             let sgroup = state.lightGroups.getItemById(id);
+            let nop = sys.board.valueMaps.circuitActions.getValue('settheme');
+            sgroup.action = nop;
+            sgroup.emitEquipmentChange();
             let msgs = this.createLightGroupMessages(group);
             msgs.msg0.payload[4] = (theme << 2) + 1;
             msgs.msg0.response = IntelliCenterBoard.getAckResponse(168);
@@ -2734,7 +2749,10 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
             await msgs.msg0.sendAsync();
             group.lightingTheme = theme;
             sgroup.lightingTheme = theme;
-
+            setTimeout(() => {
+                sgroup.action = 0;
+                sgroup.emitEquipmentChange();
+            }, 15000);
             state.emitEquipmentChanges();
             return sgroup;
         }
@@ -3826,7 +3844,7 @@ class IntelliCenterBodyCommands extends BodyCommands {
         catch (err) { return Promise.reject(err); }
     }
     public async setHeatModeAsync(body: Body, mode: number): Promise<BodyTempState> {
-        let modes = sys.board.bodies.getHeatModes(body.id);
+        let modes = sys.board.bodies.getHeatModesV2(body.id);
         if (typeof modes.find(elem => elem.val === mode) === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Cannot set heat mode to ${mode} since this is not a valid mode for the ${body.name}`, 'Body', mode));
         await this.queueBodyHeatSettings(body.id, body.id === 2 ? 23 : 22, { heatMode: mode });
         return state.temps.bodies.getItemById(body.id);
@@ -4009,6 +4027,7 @@ class IntelliCenterBodyCommands extends BodyCommands {
         sys.board.heaters.updateHeaterServices();
         let heatModes = [];
         let heatTypes = (sys.board.heaters as IntelliCenterHeaterCommands).getInstalledHeaterTypesV2(bodyId);
+        let combustionInstalled = (heatTypes.gas > 0 || heatTypes.mastertemp > 0 || heatTypes.maxetherm > 0);
         heatModes.push(this.board.valueMaps.heatSources.transformByName('off'));
         if (heatTypes.hybrid > 0) {
             heatModes.push(this.board.valueMaps.heatSources.transformByName('hybheat'));
@@ -4018,26 +4037,18 @@ class IntelliCenterBodyCommands extends BodyCommands {
         }
         if (heatTypes.gas > 0) heatModes.push(this.board.valueMaps.heatSources.transformByName('heater'));
         if (heatTypes.mastertemp > 0) heatModes.push(this.board.valueMaps.heatSources.transformByName('mtheater'));
+        if (heatTypes.maxetherm > 0) heatModes.push(this.board.valueMaps.heatSources.transformByName('maxetherm'));
         if (heatTypes.solar > 0) {
             heatModes.push(this.board.valueMaps.heatSources.transformByName('solar'));
-            if (heatTypes.total > 1) {
-                let sp = { ...this.board.valueMaps.heatSources.transformByName('solarpref'), desc: 'Solar Preferred' };
-                heatModes.push(sp);
-            }
+            if (combustionInstalled) heatModes.push(this.board.valueMaps.heatSources.transformByName('solarpref'));
         }
         if (heatTypes.ultratemp > 0) {
             heatModes.push(this.board.valueMaps.heatSources.transformByName('ultratemp'));
-            if (heatTypes.total > 1) {
-                let up = { ...this.board.valueMaps.heatSources.transformByName('ultratemppref'), desc: 'UltraTemp Preferred' };
-                heatModes.push(up);
-            }
+            if (combustionInstalled) heatModes.push(this.board.valueMaps.heatSources.transformByName('ultratemppref'));
         }
         if (heatTypes.heatpump > 0) {
             heatModes.push(this.board.valueMaps.heatSources.transformByName('heatpump'));
-            if (heatTypes.total > 1) {
-                let hp = { ...this.board.valueMaps.heatSources.transformByName('heatpumppref'), desc: 'Heat Pump Preferred' };
-                heatModes.push(hp);
-            }
+            if (combustionInstalled) heatModes.push(this.board.valueMaps.heatSources.transformByName('heatpumppref'));
         }
         return heatModes;
     }
@@ -4321,19 +4332,21 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
         if (isNaN(id)) return Promise.reject(new InvalidEquipmentIdError('Heater Id is not valid.', obj.id, 'Heater'));
         let heater: Heater;
         if (id <= 0) {
-            // We are adding a heater.  In this case we need to find the first id slot that is empty.
+            if (sys.heaters.length >= 5) return Promise.reject(new InvalidEquipmentDataError(`Maximum of 5 heaters allowed`, 'Heater', id));
             id = sys.heaters.getNextEquipmentId(new EquipmentIdRange(1, 16));
         }
         heater = sys.heaters.getItemById(id, false);
         let type = 0;
-        if (typeof obj.type === 'undefined' && (heater.type === 0 || typeof heater.type === 'undefined')) return Promise.reject(new InvalidEquipmentDataError(`Heater type was not specified for new heater`, 'Heater', obj.type));
-        else {
-            // We only get here if the type was not previously defined.
+        if (typeof obj.type === 'undefined') {
+            if (heater.type === 0 || typeof heater.type === 'undefined')
+                return Promise.reject(new InvalidEquipmentDataError(`Heater type was not specified for new heater`, 'Heater', obj.type));
+            type = heater.type;
+        } else {
             if (typeof obj.type === 'string' && isNaN(parseInt(obj.type, 10)))
                 type = sys.board.valueMaps.heaterTypes.getValue(obj.type);
             else
                 type = parseInt(obj.type, 10);
-            if (!sys.board.valueMaps.heaterTypes.valExists(type)) return Promise.reject(new InvalidEquipmentDataError(`Heater type was not specified for new heater`, 'Heater', obj.type));
+            if (!sys.board.valueMaps.heaterTypes.valExists(type)) return Promise.reject(new InvalidEquipmentDataError(`Heater type ${obj.type} is not valid`, 'Heater', obj.type));
             heater.type = type;
         }
         let htype = sys.board.valueMaps.heaterTypes.transform(type);
@@ -4411,7 +4424,8 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
             retries: 5,
             response: IntelliCenterBoard.getAckResponse(168)
         });
-        out.appendPayloadString(obj.name || heater.name, 16);
+        let nameStr = typeof obj.name !== 'undefined' ? obj.name.toString().substring(0, 15) : heater.name;
+        out.appendPayloadString(nameStr, 16);
         out.appendPayloadByte(efficiencyMode);
         out.appendPayloadByte(maxBoostTemp);
         out.appendPayloadByte(economyTime);
@@ -4422,7 +4436,7 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
         hstate.type = heater.type = type;
         heater.body = body;
         heater.address = address;
-        hstate.name = heater.name = obj.name || heater.name;
+        hstate.name = heater.name = nameStr;
         heater.coolingEnabled = typeof obj.coolingEnabled !== 'undefined' ? utils.makeBool(obj.coolingEnabled) : utils.makeBool(heater.coolingEnabled);
         heater.differentialTemp = differentialTemp;
         heater.economyTime = economyTime;
@@ -4470,6 +4484,8 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
         let gasHeaterInstalled = htypes.gas > 0;
         let ultratempInstalled = htypes.ultratemp > 0;
         let mastertempInstalled = htypes.mastertemp > 0;
+        let maxethermInstalled = htypes.maxetherm > 0;
+        let combustionHeaterInstalled = gasHeaterInstalled || mastertempInstalled || maxethermInstalled;
 
 
         // RKS: 09-26-20 This is a hack to maintain backward compatability with fw versions 1.04 and below.  Ultratemp is not
@@ -4502,59 +4518,49 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
             sys.board.valueMaps.heatModes = new byteValueMap([[1, { name: 'off', desc: 'Off' }]]);
             if (htypes.hybrid > 0) {
                 sys.board.valueMaps.heatModes.merge([
-                    [7, { name: 'hybheat', desc: 'Gas Only' }],
-                    [8, { name: 'hybheatpump', desc: 'Heat Pump Only' }],
-                    [9, { name: 'hybhybrid', desc: 'Hybrid' }],
-                    [10, { name: 'hybdual', desc: 'Dual Heat' }]
+                    [7, { name: 'hybheat', desc: 'Hybrid - Gas Only Mode' }],
+                    [8, { name: 'hybheatpump', desc: 'Hybrid - Heat Pump Only Mode' }],
+                    [9, { name: 'hybhybrid', desc: 'Hybrid - Hybrid Mode' }],
+                    [10, { name: 'hybdual', desc: 'Hybrid - Dual Mode' }]
                 ]);
                 sys.board.valueMaps.heatSources.merge([
-                    [7, { name: 'hybheat', desc: 'Gas Only' }],
-                    [8, { name: 'hybheatpump', desc: 'Heat Pump Only' }],
-                    [9, { name: 'hybhybrid', desc: 'Hybrid' }],
-                    [10, { name: 'hybdual', desc: 'Dual Heat' }]
+                    [7, { name: 'hybheat', desc: 'Hybrid - Gas Only Mode' }],
+                    [8, { name: 'hybheatpump', desc: 'Hybrid - Heat Pump Only Mode' }],
+                    [9, { name: 'hybhybrid', desc: 'Hybrid - Hybrid Mode' }],
+                    [10, { name: 'hybdual', desc: 'Hybrid - Dual Mode' }]
                 ]);
             }
             if (gasHeaterInstalled) sys.board.valueMaps.heatSources.merge([[2, { name: 'heater', desc: 'Heater' }]]);
             if (mastertempInstalled) sys.board.valueMaps.heatSources.merge([[11, { name: 'mtheater', desc: 'MasterTemp' }]]);
-            // For "preferred" modes, use htypes.total > 1 to check if multiple heat sources are installed
-            if (solarInstalled && htypes.total > 1) sys.board.valueMaps.heatSources.merge([[3, { name: 'solar', desc: 'Solar Only', hasCoolSetpoint: htypes.hasCoolSetpoint }], [4, { name: 'solarpref', desc: 'Solar Preferred', hasCoolSetpoint: htypes.hasCoolSetpoint }]]);
+            if (maxethermInstalled) sys.board.valueMaps.heatSources.merge([[12, { name: 'maxetherm', desc: 'Max-E-Therm' }]]);
+            // "Preferred" modes only appear when a combustion heater (gas/mastertemp/maxetherm) is installed —
+            // "preferred" means "prefer this source, fall back to combustion heater."
+            if (solarInstalled && combustionHeaterInstalled) sys.board.valueMaps.heatSources.merge([[3, { name: 'solar', desc: 'Solar Only', hasCoolSetpoint: htypes.hasCoolSetpoint }], [4, { name: 'solarpref', desc: 'Solar Preferred', hasCoolSetpoint: htypes.hasCoolSetpoint }]]);
+            else if (solarInstalled && htypes.total > 1) sys.board.valueMaps.heatSources.merge([[3, { name: 'solar', desc: 'Solar Only', hasCoolSetpoint: htypes.hasCoolSetpoint }]]);
             else if (solarInstalled) sys.board.valueMaps.heatSources.merge([[3, { name: 'solar', desc: 'Solar', hasCoolSetpoint: htypes.hasCoolSetpoint }]]);
-            if (heatPumpInstalled && htypes.total > 1) sys.board.valueMaps.heatSources.merge([[9, { name: 'heatpump', desc: 'Heatpump Only' }], [25, { name: 'heatpumppref', desc: 'Heat Pump Pref' }]]);
-            else if (heatPumpInstalled) sys.board.valueMaps.heatSources.merge([[9, { name: 'heatpump', desc: 'Heat Pump' }]]);
-            if (ultratempInstalled && htypes.total > 1) sys.board.valueMaps.heatSources.merge([[5, { name: 'ultratemp', desc: 'UltraTemp Only', hasCoolSetpoint: htypes.hasCoolSetpoint }], [6, { name: 'ultratemppref', desc: 'UltraTemp Pref', hasCoolSetpoint: htypes.hasCoolSetpoint }]]);
+            // v3.004+ uses val=14 for heat pump (v1.x used val=9)
+            let hpVal = sys.equipment.isIntellicenterV3 ? 14 : 9;
+            if (heatPumpInstalled && combustionHeaterInstalled) sys.board.valueMaps.heatSources.merge([[hpVal, { name: 'heatpump', desc: 'Heat Pump Only' }], [25, { name: 'heatpumppref', desc: 'Heat Pump Preferred' }]]);
+            else if (heatPumpInstalled && htypes.total > 1) sys.board.valueMaps.heatSources.merge([[hpVal, { name: 'heatpump', desc: 'Heat Pump Only' }]]);
+            else if (heatPumpInstalled) sys.board.valueMaps.heatSources.merge([[hpVal, { name: 'heatpump', desc: 'Heat Pump' }]]);
+            if (ultratempInstalled && combustionHeaterInstalled) sys.board.valueMaps.heatSources.merge([[5, { name: 'ultratemp', desc: 'UltraTemp Only', hasCoolSetpoint: htypes.hasCoolSetpoint }], [6, { name: 'ultratemppref', desc: 'UltraTemp Preferred', hasCoolSetpoint: htypes.hasCoolSetpoint }]]);
+            else if (ultratempInstalled && htypes.total > 1) sys.board.valueMaps.heatSources.merge([[5, { name: 'ultratemp', desc: 'UltraTemp Only', hasCoolSetpoint: htypes.hasCoolSetpoint }]]);
             else if (ultratempInstalled) sys.board.valueMaps.heatSources.merge([[5, { name: 'ultratemp', desc: 'UltraTemp', hasCoolSetpoint: htypes.hasCoolSetpoint }]]);
             sys.board.valueMaps.heatSources.merge([[0, { name: 'nochange', desc: 'No Change' }]]);
 
             if (gasHeaterInstalled) sys.board.valueMaps.heatModes.merge([[2, { name: 'heater', desc: 'Heater' }]]);
             if (mastertempInstalled) sys.board.valueMaps.heatModes.merge([[11, { name: 'mtheater', desc: 'MasterTemp' }]]);
-            // For "preferred" modes, check if ANY other heat source is installed (not just gas/heatpump/mastertemp)
-            const otherHeatInstalled = gasHeaterInstalled || heatPumpInstalled || mastertempInstalled || ultratempInstalled;
-            if (solarInstalled && (otherHeatInstalled && (gasHeaterInstalled || heatPumpInstalled || mastertempInstalled || ultratempInstalled))) {
-                // Solar with at least one other heat source - offer "Solar Only" and "Solar Preferred"
-                if (htypes.total > 1) sys.board.valueMaps.heatModes.merge([[3, { name: 'solar', desc: 'Solar Only' }], [4, { name: 'solarpref', desc: 'Solar Preferred' }]]);
-                else sys.board.valueMaps.heatModes.merge([[3, { name: 'solar', desc: 'Solar' }]]);
-            }
+            if (maxethermInstalled) sys.board.valueMaps.heatModes.merge([[12, { name: 'maxetherm', desc: 'Max-E-Therm' }]]);
+            if (solarInstalled && combustionHeaterInstalled) sys.board.valueMaps.heatModes.merge([[3, { name: 'solar', desc: 'Solar Only' }], [4, { name: 'solarpref', desc: 'Solar Preferred' }]]);
+            else if (solarInstalled && htypes.total > 1) sys.board.valueMaps.heatModes.merge([[3, { name: 'solar', desc: 'Solar Only' }]]);
             else if (solarInstalled) sys.board.valueMaps.heatModes.merge([[3, { name: 'solar', desc: 'Solar' }]]);
-            if (ultratempInstalled && htypes.total > 1) sys.board.valueMaps.heatModes.merge([[5, { name: 'ultratemp', desc: 'UltraTemp Only' }], [6, { name: 'ultratemppref', desc: 'UltraTemp Pref' }]]);
+            if (ultratempInstalled && combustionHeaterInstalled) sys.board.valueMaps.heatModes.merge([[5, { name: 'ultratemp', desc: 'UltraTemp Only' }], [6, { name: 'ultratemppref', desc: 'UltraTemp Preferred' }]]);
+            else if (ultratempInstalled && htypes.total > 1) sys.board.valueMaps.heatModes.merge([[5, { name: 'ultratemp', desc: 'UltraTemp Only' }]]);
             else if (ultratempInstalled) sys.board.valueMaps.heatModes.merge([[5, { name: 'ultratemp', desc: 'UltraTemp' }]]);
-            if (heatPumpInstalled && htypes.total > 1) sys.board.valueMaps.heatModes.merge([[9, { name: 'heatpump', desc: 'Heatpump Only' }], [25, { name: 'heatpumppref', desc: 'Heat Pump Preferred' }]]);
-            else if (heatPumpInstalled) sys.board.valueMaps.heatModes.merge([[9, { name: 'heatpump', desc: 'Heat Pump' }]]);
+            if (heatPumpInstalled && combustionHeaterInstalled) sys.board.valueMaps.heatModes.merge([[hpVal, { name: 'heatpump', desc: 'Heat Pump Only' }], [25, { name: 'heatpumppref', desc: 'Heat Pump Preferred' }]]);
+            else if (heatPumpInstalled && htypes.total > 1) sys.board.valueMaps.heatModes.merge([[hpVal, { name: 'heatpump', desc: 'Heat Pump Only' }]]);
+            else if (heatPumpInstalled) sys.board.valueMaps.heatModes.merge([[hpVal, { name: 'heatpump', desc: 'Heat Pump' }]]);
 
-            // IntelliCenter v3.004+: "preferred" heat mode/source codes (e.g. 4=solarpref, 6=ultratemppref) appear to be
-            // displayed/handled inconsistently across Pentair clients (dashPanel vs Wireless/Outdoor Panel).
-            // Keep the numeric codes intact (so encode/transformByName remain stable), but align the *descriptions* with
-            // what Wireless/OP actually show (i.e., treat preferred as equivalent to the base mode for UI display).
-            if (sys.equipment.isIntellicenterV3) {
-                const hs4 = sys.board.valueMaps.heatSources.get(4);
-                if (typeof hs4 !== 'undefined') sys.board.valueMaps.heatSources.set(4, { ...hs4, desc: 'Solar Only' });
-                const hs6 = sys.board.valueMaps.heatSources.get(6);
-                if (typeof hs6 !== 'undefined') sys.board.valueMaps.heatSources.set(6, { ...hs6, desc: 'UltraTemp Pref' });
-
-                const hm4 = sys.board.valueMaps.heatModes.get(4);
-                if (typeof hm4 !== 'undefined') sys.board.valueMaps.heatModes.set(4, { ...hm4, desc: 'Solar Only' });
-                const hm6 = sys.board.valueMaps.heatModes.get(6);
-                if (typeof hm6 !== 'undefined') sys.board.valueMaps.heatModes.set(6, { ...hm6, desc: 'UltraTemp Pref' });
-            }
         }
         else {
             sys.board.valueMaps.heatSources = new byteValueMap([[0, { name: 'off', desc: 'Off' }]]);

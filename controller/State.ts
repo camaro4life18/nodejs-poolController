@@ -354,6 +354,7 @@ export class State implements IState {
   
         var sdata = this.loadFile(this.statePath, {});
         sdata = extend(true, { mode: { val: -1 }, temps: { units: { val: 0, name: 'F', desc: 'Fahrenheit' } } }, sdata);
+        this.sanitizeTransientLightGroupState(sdata);
         if (typeof sdata.temps !== 'undefined' && typeof sdata.temps.bodies !== 'undefined') {
             EqStateCollection.removeNullIds(sdata.temps.bodies);
         }
@@ -436,6 +437,16 @@ export class State implements IState {
         this.appVersion = new AppVersionState(this.data, 'appVersion');
         this.data.startTime = Timestamp.toISOLocal(new Date());
         versionCheck.checkGitLocal();
+    }
+    private sanitizeTransientLightGroupState(sdata: any) {
+        if (!sdata || !Array.isArray(sdata.lightGroups)) return;
+        for (let i = 0; i < sdata.lightGroups.length; i++) {
+            const lg = sdata.lightGroups[i];
+            if (!lg || typeof lg !== 'object') continue;
+            // Sequencing state is transient and must never survive process restarts.
+            if (typeof lg.action !== 'undefined') delete lg.action;
+            if (typeof lg.endTime !== 'undefined') delete lg.endTime;
+        }
     }
     public resetData() {
         this.circuitGroups.clear();
@@ -1588,6 +1599,8 @@ export class LightGroupStateCollection extends EqStateCollection<LightGroupState
             s.type = c.type;
             s.name = c.name;
             s.isActive = c.isActive;
+            s.action = 0;
+            s.endTime = undefined;
         }
 
     }

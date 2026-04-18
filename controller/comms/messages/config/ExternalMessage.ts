@@ -442,33 +442,37 @@ export class ExternalMessage {
                     gstate.name = group.name;
                     gstate.type = group.type;
                     // Now calculate out the sync/set/swim operations.
-                    if (gstate.dataName === 'lightGroup' && start === 13) {
+                    if (gstate.dataName === 'lightGroup') {
                         let lg = gstate as LightGroupState;
-                        let ndx = lg.id - sys.board.equipmentIds.circuitGroups.start;
-                        let byteNdx = Math.floor(ndx / 4);
-                        let bitNdx = (ndx * 2) - (byteNdx * 8);
-                        let byte = msg.extractPayloadByte(start + 15 + byteNdx, 255);
-                        //console.log(`ndx:${start + 15 + byteNdx} byte: ${byte}, bit: ${bitNdx}`);
-                        byte = ((byte >> bitNdx) & 0x0003);
-                        // Each light group is represented by two bits on the status byte.  There are 3 status bytes that give us only 12 of the 16 on the config stream but the 168 message
-                        // does acutall send 4 so all are represented there.
-                        // [10] = Set
-                        // [01] = Swim
-                        // [00] = Sync
-                        // [11] = No sequencing underway.
-                        switch (byte) {
-                            case 0: // Sync
-                                lg.action = sys.board.valueMaps.circuitActions.getValue('colorsync');
-                                break;
-                            case 1: // Color swim
-                                lg.action = sys.board.valueMaps.circuitActions.getValue('colorswim');
-                                break;
-                            case 2: // Color set
-                                lg.action = sys.board.valueMaps.circuitActions.getValue('colorset');
-                                break;
-                            default:
-                                lg.action = 0;
-                                break;
+                        // Sequencing is only meaningful while the group is ON.
+                        if (!isOn) lg.action = 0;
+                        else if (start === 13) {
+                            let ndx = lg.id - sys.board.equipmentIds.circuitGroups.start;
+                            let byteNdx = Math.floor(ndx / 4);
+                            let bitNdx = (ndx * 2) - (byteNdx * 8);
+                            let byte = msg.extractPayloadByte(start + 15 + byteNdx, 255);
+                            //console.log(`ndx:${start + 15 + byteNdx} byte: ${byte}, bit: ${bitNdx}`);
+                            byte = ((byte >> bitNdx) & 0x0003);
+                            // Each light group is represented by two bits on the status byte.  There are 3 status bytes that give us only 12 of the 16 on the config stream but the 168 message
+                            // does acutall send 4 so all are represented there.
+                            // [10] = Set
+                            // [01] = Swim
+                            // [00] = Sync
+                            // [11] = No sequencing underway.
+                            switch (byte) {
+                                case 0: // Sync
+                                    lg.action = sys.board.valueMaps.circuitActions.getValue('colorsync');
+                                    break;
+                                case 1: // Color swim
+                                    lg.action = sys.board.valueMaps.circuitActions.getValue('colorswim');
+                                    break;
+                                case 2: // Color set
+                                    lg.action = sys.board.valueMaps.circuitActions.getValue('colorset');
+                                    break;
+                                default:
+                                    lg.action = 0;
+                                    break;
+                            }
                         }
                     }
                     else if(gstate.dataName === 'circuitGroup') {
