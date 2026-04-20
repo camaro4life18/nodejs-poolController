@@ -73,6 +73,51 @@ export class ExternalMessage {
                     }
                 }
             }
+            // ISSUE-078 Part B: chlorinator live-edit piggyback (Action 168 cat=7 sub=0).
+            // The OCP does NOT re-broadcast Action 30 cat=7 after a slider change; the wireless
+            // module streams A168 cat=7 updates per drag / body toggle. Without overhearing
+            // these, njsPC would lag the real state by up to a full Action 222 poll cycle.
+            // 13-byte payload confirmed via packetLog(2026-04-19_23-14-52).log:
+            //   [0]=cat 7, [1]=sub 0, [2]=selector (0 for single chlor on i8PS),
+            //   [3]=body (32=shared, 0 observed when user picked "Pool only" — NOT reliable as
+            //       the active-slot signal),
+            //   [4]=type,
+            //   [5]=poolSetpoint, [6]=spaSetpoint,
+            //   [7]=0, [8]=0,
+            //   [9]=superChlorHours,
+            //   [10]=slot-active flag (1=provisioned). Stayed 1 through body=32→0 toggle.
+            //   [11..12]=unknown (Part C).
+            // superChlor on-flag location on v3 is NOT yet characterised — deferred.
+            // Multi-chlor A168 layout (selector != 0) is also not characterised; bench is
+            // single-chlor i8PS.
+            if (msg.action === 168 && msg.extractPayloadByte(0) === 7 && msg.extractPayloadByte(1) === 0) {
+                const chlorId = 1;
+                const slotActive = msg.extractPayloadByte(10, 0) === 1;
+                if (!slotActive) {
+                    sys.chlorinators.removeItemById(chlorId);
+                    state.chlorinators.removeItemById(chlorId);
+                } else {
+                    const c = sys.chlorinators.getItemById(chlorId, true);
+                    const sc = state.chlorinators.getItemById(c.id, true);
+                    c.isActive = sc.isActive = true;
+                    c.master = 0;
+                    c.body = msg.extractPayloadByte(3, c.body || 0);
+                    c.type = msg.extractPayloadByte(4, c.type);
+                    if (!c.disabled && !c.isDosing) {
+                        c.poolSetpoint = msg.extractPayloadByte(5);
+                        c.spaSetpoint = msg.extractPayloadByte(6);
+                    }
+                    c.superChlorHours = msg.extractPayloadByte(9);
+                    c.address = 80;
+                    if (typeof c.name === 'undefined' || c.name === '') c.name = `Chlorinator ${chlorId}`;
+                    sc.body = c.body;
+                    sc.poolSetpoint = c.poolSetpoint;
+                    sc.spaSetpoint = c.spaSetpoint;
+                    sc.type = c.type;
+                    sc.superChlorHours = c.superChlorHours;
+                }
+                state.emitEquipmentChanges();
+            }
             msg.isProcessed = true;
             return;
         }

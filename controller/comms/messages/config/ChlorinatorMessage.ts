@@ -25,6 +25,60 @@ export class ChlorinatorMessage {
         var chlor: Chlorinator;
         switch (msg.extractPayloadByte(1)) {
             case 0:
+                // ISSUE-078: IntelliCenter v3.008 changed the Action 30 cat=7 sub=0 payload from
+                // v1.x column-major (stride 4) to v3 row-major (4 slots × 9 bytes/slot, payload = 38 bytes).
+                // Validated slot offsets (2026-04-19):
+                //   [0]=body (raw OCP value — 32=poolspa/shared, 1=pool, 2=spa, and on this bench
+                //       also observed 0 for "Pool only" body assignment on a shared system; body
+                //       alone is NOT a reliable active-slot signal).
+                //   [1]=type
+                //   [2]=poolSetpoint (confirmed via OCP edit pool→19)
+                //   [3]=spaSetpoint  (confirmed via OCP edit spa→10)
+                //   [4]=?
+                //   [5]=superChlorHours (inactive-slot template = 96)
+                //   [6]=slot-active flag — 1=provisioned, 0=empty slot (parallels the v1.x
+                //       byte[i+22] active flag). Confirmed via packetLog(2026-04-19_23-14-52).log:
+                //       active slots stayed at 1 through both setpoint edits AND a body=32→0
+                //       "Pool only" toggle, while inactive slots 1..3 stay at 0.
+                //   [7..8]=unknown (possibly salt / status; Part C).
+                // superChlor on-flag location is NOT yet characterised on v3 — deferred.
+                if (sys.equipment.isIntellicenterV3) {
+                    const SLOT_STRIDE = 9;
+                    for (let slot = 0; slot < 4; slot++) {
+                        const base = 2 + slot * SLOT_STRIDE;
+                        if (base + SLOT_STRIDE > msg.payload.length) break;
+                        const cid = slot + 1;
+                        const slotActive = msg.extractPayloadByte(base + 6) === 1;
+                        if (!slotActive) {
+                            sys.chlorinators.removeItemById(cid);
+                            state.chlorinators.removeItemById(cid);
+                            continue;
+                        }
+                        const c = sys.chlorinators.getItemById(cid, true);
+                        const sc = state.chlorinators.getItemById(c.id, true);
+                        c.isActive = sc.isActive = true;
+                        c.master = 0;
+                        c.body = msg.extractPayloadByte(base + 0);
+                        c.type = msg.extractPayloadByte(base + 1);
+                        if (!c.disabled && !c.isDosing) {
+                            c.poolSetpoint = msg.extractPayloadByte(base + 2);
+                            c.spaSetpoint = msg.extractPayloadByte(base + 3);
+                        }
+                        c.superChlorHours = msg.extractPayloadByte(base + 5);
+                        c.address = 80 + slot;
+                        if (typeof c.name === 'undefined' || c.name === '') c.name = `Chlorinator ${cid}`;
+                        sc.body = c.body;
+                        sc.poolSetpoint = c.poolSetpoint;
+                        sc.spaSetpoint = c.spaSetpoint;
+                        sc.type = c.type;
+                        sc.model = c.model;
+                        sc.name = c.name;
+                        sc.superChlorHours = c.superChlorHours;
+                    }
+                    state.emitEquipmentChanges();
+                    msg.isProcessed = true;
+                    break;
+                }
                 chlorId = 1;
                 for (let i = 0; i < 4 && i + 30 < msg.payload.length; i++) {
                     let isActive = msg.extractPayloadByte(i + 22) === 1;

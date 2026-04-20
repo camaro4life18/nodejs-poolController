@@ -15,9 +15,16 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
-import { Inbound, Outbound, Protocol } from '../../comms/messages/Messages';
+import { Direction, Inbound, Outbound, Protocol } from '../../comms/messages/Messages';
+import { PumpStateMessage } from '../../comms/messages/status/PumpStateMessage';
 import { conn } from '../../comms/Comms';
+import { sys } from '../../Equipment';
 import { logger } from '../../../logger/Logger';
+
+// Actions whose response carries live rpm/watts/driveState that
+// PumpStateMessage.process consumes for state.pumps[].  Loopback of pure ACKs
+// (4 remote/local, 6 power) would be noise — state.pumps doesn't read them.
+const LOOPBACK_ACTIONS = new Set<number>([7]);
 
 export interface VirtualPumpOptions {
     address: number;
@@ -67,7 +74,10 @@ export abstract class VirtualPump {
         this.address = opts.address;
         this.portId = opts.portId ?? 0;
         this.wattModel = opts.wattModel || 'cheap';
-        this._enabled = opts.enabled !== false;
+        // Fail-off default: a missing `enabled` field must NOT light up a
+        // virtual pump that could collide with real hardware.  Only an
+        // explicit `enabled: true` enables; anything else is disabled.
+        this._enabled = opts.enabled === true;
         this._autoDisabled = opts.autoDisabled === true;
         this._autoDisabledAt = opts.autoDisabledAt ?? null;
         this._autoDisabledReason = opts.autoDisabledReason ?? null;
@@ -95,9 +105,14 @@ export abstract class VirtualPump {
     }
 
     public setAutoDisabled(v: boolean, reason?: string): void {
+        const wasEffective = this.isEffective;
         this._autoDisabled = v;
         this._autoDisabledAt = v ? new Date().toISOString() : null;
         this._autoDisabledReason = v ? (reason || 'Collision detected on bus') : null;
+        // When effectiveness drops we are no longer answering on the bus —
+        // any leftover "running / 2540 rpm / 798 W" runtime is stale and
+        // misleading in the dP readout.  Clear it.
+        if (wasEffective && !this.isEffective) this._resetRuntime();
     }
     public clearAutoDisabled(): void {
         this._autoDisabled = false;
@@ -106,12 +121,30 @@ export abstract class VirtualPump {
     }
 
     public applyUserConfig(opts: Partial<VirtualPumpOptions>): void {
+        const wasEffective = this.isEffective;
         if (typeof opts.enabled === 'boolean') this._enabled = opts.enabled;
         if (typeof opts.portId === 'number') this.portId = opts.portId;
         if (typeof opts.wattModel === 'string') this.wattModel = opts.wattModel;
         // Re-enabling resets the runtime clock so the status time counter
         // doesn't look frozen after a long auto-disable.
         if (opts.enabled === true) this._enabledAt = Date.now();
+        // Same cleanup on user-disable as on auto-disable.
+        if (wasEffective && !this.isEffective) this._resetRuntime();
+    }
+
+    /**
+     * Wipe transient runtime state (running, remote, speeds, watts).  Called
+     * when the pump transitions from effective → not-effective so the REST /
+     * socket snapshot doesn't display stale OCP-commanded values next to
+     * "Effective: no".  _packetCount / _lastPacketAt are preserved as a
+     * historical record of bus activity.
+     */
+    private _resetRuntime(): void {
+        this._running = false;
+        this._remote = false;
+        this._targetRpm = 0;
+        this._targetFlow = 0;
+        this._feature = 0;
     }
 
     /**
@@ -171,6 +204,43 @@ export abstract class VirtualPump {
             logger.verbose(`VirtualPump ${this.address}: answered action ${msg.action} with ${response.toShortPacket()}`);
         } catch (err) {
             logger.error(`VirtualPump ${this.address}: failed to queue response for action ${msg.action}: ${(err as Error).message}`);
+        }
+
+        // njsPC only populates state.pumps[].rpm/watts/driveState from inbound
+        // pump replies (PumpStateMessage.process, gated on msg.source>=96).  A
+        // real pump on the bus satisfies that naturally; our virtual pump
+        // writes are outbound-only and never come back.  Feed a synthetic copy
+        // of the reply directly to the parser so ICP/OCP and dashPanel agree.
+        // We call PumpStateMessage.process() directly (not Messages.process /
+        // Inbound.process) so the VirtualEquipment dispatch hook isn't
+        // re-entered and we can't loop.
+        if (LOOPBACK_ACTIONS.has(msg.action)) {
+            this._loopbackAsInbound(response);
+        }
+    }
+
+    private _loopbackAsInbound(out: Outbound): void {
+        // Only loop back if the OCP has an active pump configured at our
+        // address — PumpStateMessage.process() looks up by address and would
+        // otherwise synthesize a phantom pump entry, violating our
+        // "virtual pump is invisible to sys.pumps" invariant.
+        const cfg = sys.pumps.find(p => p.address === this.address && p.isActive === true);
+        if (!cfg) return;
+
+        try {
+            const inbound = new Inbound();
+            inbound.protocol = Protocol.Pump;
+            inbound.direction = Direction.In;
+            inbound.portId = out.portId;
+            inbound.preamble = [255, 0, 255];
+            inbound.header = out.header.slice();
+            inbound.payload = out.payload.slice();
+            inbound.term = out.term.slice();
+            inbound.isValid = true;
+            inbound.timestamp = new Date();
+            PumpStateMessage.process(inbound);
+        } catch (err) {
+            logger.error(`VirtualPump ${this.address}: loopback to PumpStateMessage failed for action ${out.action}: ${(err as Error).message}`);
         }
     }
 

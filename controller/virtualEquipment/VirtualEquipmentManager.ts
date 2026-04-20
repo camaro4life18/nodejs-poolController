@@ -61,7 +61,16 @@ export class VirtualEquipmentManager {
     public async loadAsync(): Promise<void> {
         try {
             if (!fs.existsSync(this._filePath)) {
+                // Fail-off default: write an empty skeleton so the file's
+                // existence is explicit and any future hand-edits start from
+                // a known-disabled baseline.  We never auto-populate pumps.
                 this._loaded = true;
+                try {
+                    await this.saveAsync();
+                    logger.info(`VirtualEquipment: created empty ${this._filePath} (no virtual devices configured)`);
+                } catch (err) {
+                    logger.warn(`VirtualEquipment: could not create ${this._filePath}: ${(err as Error).message}`);
+                }
                 return;
             }
             const raw = fs.readFileSync(this._filePath, 'utf8') || '{}';
@@ -91,7 +100,9 @@ export class VirtualEquipmentManager {
                 return new VirtualPumpVS({
                     address: def.address,
                     portId: typeof def.portId === 'number' ? def.portId : 0,
-                    enabled: def.enabled !== false,
+                    // Fail-off: only an explicit `enabled: true` in the
+                    // persisted/incoming definition enables the pump.
+                    enabled: def.enabled === true,
                     autoDisabled: def.autoDisabled === true,
                     autoDisabledAt: def.autoDisabledAt || null,
                     autoDisabledReason: def.autoDisabledReason || null,
@@ -183,7 +194,11 @@ export class VirtualEquipmentManager {
                 pump = null;
             } else {
                 pump.applyUserConfig({
-                    enabled: def.enabled !== false,
+                    // Fail-off: a PUT body without an explicit `enabled: true`
+                    // is treated as disabled.  The dP widget always sends the
+                    // checkbox value explicitly, so this only matters for
+                    // hand-crafted PUTs or partial payloads.
+                    enabled: def.enabled === true,
                     portId: typeof def.portId === 'number' ? def.portId : pump.portId,
                     wattModel: def.wattModel || pump.wattModel
                 });
