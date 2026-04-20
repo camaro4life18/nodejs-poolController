@@ -1062,6 +1062,18 @@ export class Inbound extends Message {
             if (port.mock && port.hasAssignedEquipment()){
                 return MessagesMock.process(this);
             }
+            // VirtualEquipment: wire-level simulator for downstream devices
+            // (pumps, etc.) that impersonate real hardware toward whichever
+            // master is on the bus (real OCP or njsPC/Nixie).  Config lives
+            // in data/virtualEquipment.json (not poolConfig), so it will not
+            // appear in sys.pumps / state.pumps.
+            const vEquip = sys.virtualEquipment;
+            if (vEquip) {
+                vEquip.observe(this);
+                if (vEquip.shouldAnswer(this)) {
+                    return vEquip.process(this);
+                }
+            }
         }
         switch (this.protocol) {
             case Protocol.Broadcast:

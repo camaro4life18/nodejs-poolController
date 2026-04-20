@@ -35,6 +35,7 @@ import { NixieBoard } from 'controller/boards/NixieBoard';
 import { MockSystemBoard } from "../anslq25/boards/MockSystemBoard";
 import { MockBoardFactory } from "../anslq25/boards/MockBoardFactory";
 import { ScreenLogicComms } from "./comms/ScreenLogic";
+import { VirtualEquipmentManager, virtualEquipmentManager } from "./virtualEquipment/VirtualEquipmentManager";
 
 interface IPoolSystem {
     cfgPath: string;
@@ -211,6 +212,9 @@ export class PoolSystem implements IPoolSystem {
         this.filters = new FilterCollection(this.data, 'filters');
         this.board = BoardFactory.fromControllerType(this.controllerType, this);
         this.anslq25Board = MockBoardFactory.fromControllerType(this.data.anslq25.controllerType, this);
+        this.virtualEquipment = virtualEquipmentManager;
+        // Fire and forget: missing/malformed file is non-fatal and only logs a warning.
+        this.virtualEquipment.loadAsync().catch(() => { /* logged inside */ });
     }
     // This performs a safe load of the config file.  If the file gets corrupt or actually does not exist
     // it will not break the overall system and allow hardened recovery.
@@ -350,6 +354,7 @@ export class PoolSystem implements IPoolSystem {
     }
     public board: SystemBoard = new SystemBoard(this);
     public anslq25Board: MockSystemBoard; // = new MockSystemBoard(this);
+    public virtualEquipment: VirtualEquipmentManager;
     public ncp: NixieControlPanel = new NixieControlPanel();
     public processVersionChanges(ver: ConfigVersion) { this.board.requestConfiguration(ver); }
     public checkConfiguration() { this.board.checkConfiguration(); }

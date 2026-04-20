@@ -604,6 +604,41 @@ export class ConfigRoute {
                 return res.status(200).send(sys.anslq25.get(true));
             } catch (err) { next(err); }
         });
+        // Virtual Equipment (wire-level slave simulators: pumps, etc.)
+        // These are NOT in poolConfig/state; they're a separate runtime feature
+        // persisted in data/virtualEquipment.json and controlled purely via REST.
+        app.get('/config/virtualEquipment', async (req, res, next) => {
+            try {
+                if (!sys.virtualEquipment) return res.status(200).send({ pumps: [] });
+                return res.status(200).send(sys.virtualEquipment.getSnapshot());
+            } catch (err) { next(err); }
+        });
+        app.put('/config/virtualEquipment/pump', async (req, res, next) => {
+            try {
+                if (!sys.virtualEquipment) return res.status(503).send({ error: 'VirtualEquipment not initialized' });
+                const pump = await sys.virtualEquipment.upsertPumpAsync(req.body || {});
+                return res.status(200).send(pump.toSnapshot());
+            } catch (err) { next(err); }
+        });
+        app.delete('/config/virtualEquipment/pump/:address', async (req, res, next) => {
+            try {
+                if (!sys.virtualEquipment) return res.status(503).send({ error: 'VirtualEquipment not initialized' });
+                const address = parseInt(req.params.address, 10);
+                if (!Number.isFinite(address)) return res.status(400).send({ error: 'invalid address' });
+                await sys.virtualEquipment.deletePumpAsync(address);
+                return res.status(200).send(sys.virtualEquipment.getSnapshot());
+            } catch (err) { next(err); }
+        });
+        app.put('/config/virtualEquipment/pump/:address/reenable', async (req, res, next) => {
+            try {
+                if (!sys.virtualEquipment) return res.status(503).send({ error: 'VirtualEquipment not initialized' });
+                const address = parseInt(req.params.address, 10);
+                if (!Number.isFinite(address)) return res.status(400).send({ error: 'invalid address' });
+                const pump = await sys.virtualEquipment.reenablePumpAsync(address);
+                if (!pump) return res.status(404).send({ error: `no virtual pump at address ${address}` });
+                return res.status(200).send(pump.toSnapshot());
+            } catch (err) { next(err); }
+        });
         app.delete('/config/filter', async (req, res, next) => {
             try {
                 let sfilter = await sys.board.filters.deleteFilterAsync(req.body);
