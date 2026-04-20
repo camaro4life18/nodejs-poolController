@@ -1,5 +1,44 @@
 # Changelog
 
+## 9.0.0
+Focused release on IntelliCenter v3.008 firmware compatibility, finishing the v3 work started in 8.4.1, plus the Regal Century pump Modbus fixes.
+
+1. IntelliCenter v3.008 chlorinator support: row-major stride-9 decoder for Action 30 cat=7 sub=0 payloads and live-edit piggyback on Action 168 cat=7.
+2. v3 state polling so feature and circuit changes from the panel appear in dashPanel within seconds instead of ~30s.
+3. v3 heater management: ETI250 (type 8), expanded heater type/mode coverage, and improved control-path handling.
+4. v3 body handling: body capacity updates from ExternalMessage and enhanced unit handling.
+5. v3 light group state management improvements (sync-back, theme/color updates, stuck-action clearing).
+6. v3 firmware change detection so configuration reloads when the OCP firmware version shifts.
+7. Circuit management enhancements in IntelliCenterBoard and CircuitCommands; `getCircuitFunctions` retains pool/spa options across call sites.
+8. Virtual equipment management with new API endpoints.
+9. Equipment item queuing refactor in `IntelliCenterConfigQueue` for v3 compatibility.
+10. Regal (Century) Modbus pump now supported as equipment in Nixie: improved collision detection, header validation via `pumpTypes` (accepts messages only from configured RegalModbus pumps), and NACK/fault response handling on Go/Stop commands (0x41/0x42). Thanks to @celestinjr — [PR #1169](https://github.com/tagyoureit/nodejs-poolController/pull/1169).
+
+## 8.4.1
+Major v3.004+ IntelliCenter refinement release covering three months of work on top of 8.4.0.
+
+1. IntelliCenter v3.004+ circuit control via indexed Action 184 frames with learned target IDs and collision prevention; Action 168 no longer used for v3 circuit on/off.
+2. v3.004+ feature handling: features use the new [232,157] payload block; feature state delegated through the circuit path; config requests piggyback on confirmations instead of debouncing.
+3. Big-endian payload handling across v3.004+ (pumps, schedules, options) with a unified `readInt` helper.
+4. v3.004+ pump configuration: speed/flow encoding, forced refresh on WCP changes, destination addressing, and streamlined payload processing.
+5. v3.004+ temperature and location handling: variable payload offsets for Action 168 temp settings, latitude/longitude calculation accuracy, and proper refresh on general configuration updates.
+6. Freeze cycle and freeze override settings exposed on Equipment and IntelliCenter classes.
+7. Watchdog functionality added to IntelliCenter configuration handling.
+8. Alerts functionality in Equipment and related classes — OCP alert state surfaced to dashPanel / API.
+9. IntelliChem standalone mode for configurations without an OCP chemistry controller.
+10. Nixie: Neptune Modbus pump support added to NixieBoard.
+11. Nixie: NixieChemPump syncs circuit states instead of feature states (aligns relay bindings with the hardware-bound source of truth).
+12. OCP write security enforcement in ConfigRoute — blocks mutations when OCP write is disallowed.
+13. New `ultratempdirect` heater type for direct RS-485 UltraTemp control.
+14. `*Touch` heat source/mode handling: `ultratemp` transforms to `heatpump` when undefined; OCP ghost heaters suppressed based on NCP control (#1116, #1060).
+15. WaterColors light circuit support in circuit state management.
+16. `assertSinglePoolSpaType` validation across boards to prevent invalid pool/spa circuit type combinations.
+17. Hayward outbound action matching restored — response-level action index mismatch fix for non-IntelliCenter protocols (#1151).
+18. Scope conditionally set in IntelliCenterBoard based on equipment version.
+19. docker-compose.yml + README updates for local development and image channel clarity.
+20. dashPanel image reference updates.
+21. TypeScript config tweak to skip library checks for faster builds.
+
 ## 8.4.0
 1. IntelliCenter v3.004+ support (still being refined): registration handling, config refresh/ACK handling, and improved source-of-truth processing to keep state accurate.
 2. IntelliCenter v3.004+ circuit control updates: Action 184 support with learned Target IDs for more reliable circuit on/off behavior.
@@ -54,7 +93,7 @@
 1. Refactor comms code to Async
 2. Update dependencies and Node >16
 3. EasyTouch v1 support
-4. Screenlogic support
+4. Screenlogic support — can now be used as a direct connection point for users who don't want to integrate an RS-485 adapter. RS-485 is still the preferred method as it is more fully featured.
 5. Anslq25 (Mock controller)
 
 ## 7.7.0
@@ -122,9 +161,10 @@
 4. Outbound processing for packets now has a scope.  Previously if an outbound packet would receive a response we would clear all of the similar packets off the queue.  EG if a user requests circuit 2 and 3 to be turned on, we would clear out the outbound message for 3.  Now the code is more selective about what "scope" is considered for a successful response.
 
 ## 7.0.0
-1. Upgrades to setup/sync between njsPC and REM
+1. Upgrades to setup/sync between njsPC and REM (Relay Equipment Manager) — tight integration providing hardware control over ancillary pool equipment (chemical probes, pumps, tanks, heaters, etc).
 2. Significant steps to njsPC (Nixie) acting as a standalone pool controller (virtual controller heaters, move virtual controller code, etc.)
 3. Dependency updates (Typescript 4, Socket.io 4, etc)
+4. Branch policy change: starting with this version, all code is pushed immediately to `master`. The `next` branch for feature development is retired.
 
 ## 6.5.2
 1. Bug Fixes

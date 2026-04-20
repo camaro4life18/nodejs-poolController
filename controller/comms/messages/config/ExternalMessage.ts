@@ -16,10 +16,11 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 import { Inbound } from "../Messages";
-import { sys, Body, ICircuitGroup, LightGroup, CircuitGroup } from "../../../Equipment";
+import { sys, Body, ICircuitGroup, LightGroup, CircuitGroup, Cover } from "../../../Equipment";
 import { state, ICircuitGroupState, LightGroupState, CircuitGroupState } from "../../../State";
 import { ControllerType, Timestamp, utils } from "../../../Constants";
 import { logger } from "../../../../logger/Logger";
+import { CoverMessage } from "./CoverMessage";
 export class ExternalMessage {
     private static normalizePumpBodyCode(rawBody: number): number {
         const poolBody = sys.board.valueMaps.pumpBodies.getValue('pool');
@@ -162,7 +163,9 @@ export class ExternalMessage {
             case 13: // Bodies (Manual heat, capacities)
                 ExternalMessage.processBodies(msg);
                 break;
-            case 14: // Covers
+            case 14: // Covers (ISSUE-075 #5: route A168 cat=14 into CoverMessage so wireless/piggyback
+                //             cover edits are ingested without waiting for the OCP's A30 rebroadcast)
+                CoverMessage.processA168(msg);
                 break;
             case 15: // Circuit, feature, group, and schedule States
                 ExternalMessage.processCircuitState(3, msg);
@@ -749,6 +752,31 @@ export class ExternalMessage {
             s.spaSetpoint = cfg.spaSetpoint;
             s.superChlorHours = cfg.superChlorHours;
             s.body = cfg.body;
+
+            // ISSUE-075 #4 / ISSUE-080: cover-menu "IntelliChlor Output" (per-body, not per-cover)
+            // piggybacks on this same A168 cat=7 packet in bytes 11 (Pool, 0-50) and 12 (Spa, 0-10).
+            // Per .plan/v3.008/covers-packet-reference.md §4.2. Assign to whichever cover is
+            // currently bound to each body by cat=14 flags bit 3.
+            if (msg.payload.length > 12) {
+                const poolCoverOutput = msg.extractPayloadByte(11);
+                const spaCoverOutput = msg.extractPayloadByte(12);
+                const poolBodyId = sys.board.valueMaps.bodies.getValue('pool');
+                const spaBodyId = sys.board.valueMaps.bodies.getValue('spa');
+                const covers = sys.covers.get();
+                for (let i = 0; i < covers.length; i++) {
+                    const c: Cover = sys.covers.getItemById(covers[i].id);
+                    if (!c || !c.isActive) continue;
+                    const sc = state.covers.getItemById(c.id, true);
+                    const bodyVal = sys.board.valueMaps.bodies.encode(c.body);
+                    if (bodyVal === poolBodyId) {
+                        c.chlorOutput = poolCoverOutput;
+                        sc.chlorOutput = poolCoverOutput;
+                    } else if (bodyVal === spaBodyId) {
+                        c.chlorOutput = spaCoverOutput;
+                        sc.chlorOutput = spaCoverOutput;
+                    }
+                }
+            }
             msg.isProcessed = true;
         }
         state.emitEquipmentChanges();

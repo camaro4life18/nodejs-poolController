@@ -17,8 +17,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 import * as extend from 'extend';
 import { EventEmitter } from 'events';
-import { SystemBoard, byteValueMap, byteValueMaps, ConfigQueue, ConfigRequest, CircuitCommands, FeatureCommands, ChlorinatorCommands, PumpCommands, BodyCommands, ScheduleCommands, HeaterCommands, EquipmentIdRange, ValveCommands, SystemCommands, ChemControllerCommands } from './SystemBoard';
-import { PoolSystem, Body, Schedule, Pump, ConfigVersion, sys, Heater, ICircuitGroup, LightGroupCircuit, LightGroup, ExpansionPanel, ExpansionModule, ExpansionModuleCollection, Valve, General, Options, Location, Owner, ICircuit, Feature, CircuitGroup, ChemController, TempSensorCollection, Chlorinator } from '../Equipment';
+import { SystemBoard, byteValueMap, byteValueMaps, ConfigQueue, ConfigRequest, CircuitCommands, FeatureCommands, ChlorinatorCommands, PumpCommands, BodyCommands, ScheduleCommands, HeaterCommands, EquipmentIdRange, ValveCommands, SystemCommands, ChemControllerCommands, CoverCommands } from './SystemBoard';
+import { PoolSystem, Body, Schedule, Pump, ConfigVersion, sys, Heater, ICircuitGroup, LightGroupCircuit, LightGroup, ExpansionPanel, ExpansionModule, ExpansionModuleCollection, Valve, General, Options, Location, Owner, ICircuit, Feature, CircuitGroup, ChemController, TempSensorCollection, Chlorinator, Cover } from '../Equipment';
 import { Protocol, Outbound, Inbound, Message, Response } from '../comms/messages/Messages';
 import { conn } from '../comms/Comms';
 import { logger } from '../../logger/Logger';
@@ -302,6 +302,7 @@ export class IntelliCenterBoard extends SystemBoard {
     public schedules: IntelliCenterScheduleCommands = new IntelliCenterScheduleCommands(this);
     public heaters: IntelliCenterHeaterCommands = new IntelliCenterHeaterCommands(this);
     public valves: IntelliCenterValveCommands = new IntelliCenterValveCommands(this);
+    public covers: IntelliCenterCoverCommands = new IntelliCenterCoverCommands(this);
     public chemControllers: IntelliCenterChemControllerCommands = new IntelliCenterChemControllerCommands(this);
     public reloadConfig() {
         //sys.resetSystem();
@@ -5088,6 +5089,126 @@ export class IntelliCenterChemControllerCommands extends ChemControllerCommands 
 
     //    });
     //}
+}
+
+// ISSUE-080: Action 168 cat=14 outbound write path for IntelliCenter covers.
+// Packet reference: .plan/v3.008/covers-packet-reference.md §2.2
+//
+//   A168 cat=14 payload (30 bytes):
+//     [0]=14 (cat)
+//     [1]=0  (sub — always 0 observed)
+//     [2]=slot (0=Cover 1, 1=Cover 2)
+//     [3..18]=name (16 bytes, ASCII, null-padded) — hard-fixed to "Cover 1"/"Cover 2"
+//     [19..28]=circuits (10 bytes, 0xFF=empty)
+//     [29]=flags  (bit 0=chlorActive, bit 1=normallyOn, bit 2=isActive, bit 3=Pool body)
+//
+// Body output caps (enforced server-side, mirrors OCP UI):
+//   Pool body: chlorOutput 0-50
+//   Spa body : chlorOutput 0-10
+//
+// Per-body routing: `chlorOutput` is applied via the chlorinator cat=7 piggyback, NOT cat=14.
+// This method encodes the cover config itself; the output update flows through the chlorinator
+// path on the next OCP rebroadcast (or user-driven OCP edit). Writing output from dashPanel is
+// therefore a two-step OCP operation — note this in the UI.
+class IntelliCenterCoverCommands extends CoverCommands {
+    public async setCoverAsync(obj: any): Promise<Cover> {
+        const id = parseInt(obj.id, 10);
+        if (isNaN(id) || id < 1 || id > 2)
+            return Promise.reject(new InvalidEquipmentIdError('Cover Id is not valid (1 or 2).', obj.id, 'Cover'));
+
+        const cover = sys.covers.getItemById(id, false);
+        if (!cover || typeof cover.name === 'undefined')
+            return Promise.reject(new InvalidEquipmentIdError(`Cover ${id} does not exist. Enable it on the OCP first.`, obj.id, 'Cover'));
+
+        // Name is read-only per OCP behavior (no rename UI on the panel). Reject any attempt.
+        if (typeof obj.name !== 'undefined' && obj.name !== cover.name)
+            return Promise.reject(new InvalidEquipmentDataError(`Cover names cannot be changed — OCP does not expose a rename UI. Keep name: ${cover.name}`, 'Cover', obj.name));
+
+        const poolBodyId = sys.board.valueMaps.bodies.getValue('pool');
+        const spaBodyId = sys.board.valueMaps.bodies.getValue('spa');
+
+        let body: number;
+        if (typeof obj.body !== 'undefined') {
+            if (typeof obj.body === 'string' && isNaN(parseInt(obj.body, 10)))
+                body = sys.board.valueMaps.bodies.getValue(obj.body);
+            else body = parseInt(obj.body, 10);
+            if (body !== poolBodyId && body !== spaBodyId)
+                return Promise.reject(new InvalidEquipmentDataError(`Cover body must be Pool or Spa.`, 'Cover', obj.body));
+        } else {
+            body = sys.board.valueMaps.bodies.encode(cover.body);
+        }
+
+        const isActive = typeof obj.isActive !== 'undefined' ? utils.makeBool(obj.isActive) : cover.isActive;
+        const normallyOn = typeof obj.normallyOn !== 'undefined' ? utils.makeBool(obj.normallyOn) : cover.normallyOn;
+        const chlorActive = typeof obj.chlorActive !== 'undefined' ? utils.makeBool(obj.chlorActive) : cover.chlorActive;
+
+        // Circuits: up to 10; reject IDs that don't resolve to a real circuit/feature.
+        let circuits: number[] = Array.isArray(obj.circuits) ? obj.circuits.map((c: any) => parseInt(c, 10)).filter((n: number) => !isNaN(n)) : cover.circuits.slice();
+        if (circuits.length > 10)
+            return Promise.reject(new InvalidEquipmentDataError(`A cover can have at most 10 Affected Circuits; got ${circuits.length}.`, 'Cover', circuits));
+        const validRefs = sys.board.circuits.getCircuitReferences(true, true, false, false);
+        for (const cid of circuits) {
+            if (!validRefs.find((r: any) => r.id === cid))
+                return Promise.reject(new InvalidEquipmentDataError(`Affected Circuit id ${cid} is not a valid circuit or feature.`, 'Cover', cid));
+        }
+
+        // Body-aware output cap. OCP auto-disables chlorActive when body swap brings output
+        // out of range; mirror that here so the OCP and njsPC agree on post-swap state.
+        const capMax = body === spaBodyId ? 10 : 50;
+        let chlorOutput = typeof obj.chlorOutput !== 'undefined' ? parseInt(obj.chlorOutput, 10) : (cover.chlorOutput || 0);
+        if (isNaN(chlorOutput) || chlorOutput < 0)
+            return Promise.reject(new InvalidEquipmentDataError(`IntelliChlor Output must be between 0 and ${capMax}.`, 'Cover', obj.chlorOutput));
+        let postChlorActive = chlorActive;
+        if (chlorOutput > capMax) {
+            logger.info(`setCoverAsync: cover ${id} chlorOutput ${chlorOutput} exceeds ${body === spaBodyId ? 'Spa' : 'Pool'} max ${capMax}; clamping and disabling chlorActive.`);
+            chlorOutput = capMax;
+            postChlorActive = false;
+        }
+
+        // Build the flags byte from the semantic inputs.
+        const flags =
+            (postChlorActive ? 0x01 : 0) |
+            (normallyOn ? 0x02 : 0) |
+            (isActive ? 0x04 : 0) |
+            (body === poolBodyId ? 0x08 : 0);
+
+        const slot = id - 1;
+        const out = Outbound.create({
+            action: 168,
+            payload: [14, 0, slot],
+            retries: 5,
+            response: IntelliCenterBoard.getAckResponse(168)
+        });
+        // Name: preserve OCP-fixed value ("Cover 1"/"Cover 2"), 16 bytes, null-padded.
+        out.appendPayloadString(cover.name || `Cover ${id}`, 16);
+        // Circuits: 10 slots, unused filled with 0xFF.
+        for (let i = 0; i < 10; i++) {
+            out.appendPayloadByte(i < circuits.length ? circuits[i] : 0xFF);
+        }
+        out.appendPayloadByte(flags);
+
+        await out.sendAsync();
+
+        // Commit the config — parser will overwrite on next OCP broadcast anyway, but
+        // dashPanel needs immediate values (Rule 18).
+        cover.body = body;
+        cover.isActive = isActive;
+        cover.normallyOn = normallyOn;
+        cover.chlorActive = postChlorActive;
+        cover.chlorOutput = chlorOutput;
+        cover.circuits = circuits;
+
+        const scover = state.covers.getItemById(cover.id, true);
+        scover.name = cover.name;
+        scover.body = cover.body;
+        scover.isActive = cover.isActive;
+        scover.normallyOn = cover.normallyOn;
+        scover.chlorActive = cover.chlorActive;
+        scover.chlorOutput = cover.chlorOutput;
+        state.emitEquipmentChanges();
+
+        return cover;
+    }
 }
 
 enum ConfigCategories {

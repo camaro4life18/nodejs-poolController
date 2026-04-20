@@ -6,7 +6,7 @@ module.exports = function(grunt) {
         options: {
           position: 'top',
           banner:    `/*  nodejs-poolController.  An application to control pool equipment.
-Copyright (C) 2016, 2017.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
+Copyright (C) 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as

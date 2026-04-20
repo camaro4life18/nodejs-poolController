@@ -1863,10 +1863,16 @@ export class Cover extends EqItem {
     public set normallyOn(val: boolean) { this.setDataVal('normallyOn', val); }
     public get circuits(): number[] { return this.data.circuits; }
     public set circuits(val: number[]) { this.setDataVal('circuits', val); }
+    // ISSUE-075 / ISSUE-080: IntelliChlor Active is cat=14 flags bit 0 (OCP cover-menu
+    // "IntelliChlor Active" toggle — switch the chlorinator off while this cover is closed).
     public get chlorActive(): boolean { return this.data.chlorActive; }
     public set chlorActive(val: boolean) { this.setDataVal('chlorActive', val); }
-    public get chlorOutput(): boolean { return this.data.chlorOutput; }
-    public set chlorOutput(val: boolean) { this.setDataVal('chlorOutput', val); }
+    // ISSUE-075 / ISSUE-080: IntelliChlor Output is a numeric % (0-50 for Pool body, 0-10 for Spa body).
+    // It does NOT live in the cat=14 payload; it is supplied by the A30 cat=7 chlorinator packet at
+    // slot-0 offset 7 (Pool) / offset 8 (Spa), and by A168 cat=7 bytes 11/12 for live-edit piggyback.
+    // See .plan/v3.008/covers-packet-reference.md §4.2.
+    public get chlorOutput(): number { return this.data.chlorOutput; }
+    public set chlorOutput(val: number) { this.setDataVal('chlorOutput', val); }
 }
 export interface ICircuitGroup {
     id: number;

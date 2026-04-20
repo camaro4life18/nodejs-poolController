@@ -19,7 +19,7 @@ import * as extend from 'extend';
 import { logger } from '../../logger/Logger';
 import { Message, Outbound } from '../comms/messages/Messages';
 import { Timestamp, utils } from '../Constants';
-import { Body, ChemController, ChemDoser, Chlorinator, Circuit, CircuitGroup, CircuitGroupCircuit, ConfigVersion, ControllerType, CustomName, CustomNameCollection, EggTimer, Equipment, Feature, Filter, General, Heater, ICircuit, ICircuitGroup, ICircuitGroupCircuit, LightGroup, LightGroupCircuit, Location, Options, Owner, PoolSystem, Pump, Schedule, sys, TempSensorCollection, Valve } from '../Equipment';
+import { Body, ChemController, ChemDoser, Chlorinator, Circuit, CircuitGroup, CircuitGroupCircuit, ConfigVersion, ControllerType, Cover, CustomName, CustomNameCollection, EggTimer, Equipment, Feature, Filter, General, Heater, ICircuit, ICircuitGroup, ICircuitGroupCircuit, LightGroup, LightGroupCircuit, Location, Options, Owner, PoolSystem, Pump, Schedule, sys, TempSensorCollection, Valve } from '../Equipment';
 import { EquipmentNotFoundError, InvalidEquipmentDataError, InvalidEquipmentIdError, BoardProcessError, InvalidOperationError } from '../Errors';
 import { ncp } from "../nixie/Nixie";
 import { HeaterState, BodyTempState, ChemControllerState, ChemDoserState, ChlorinatorState, CircuitGroupState, FilterState, ICircuitGroupState, ICircuitState, LightGroupState, ScheduleState, state, TemperatureState, ValveState, VirtualCircuitState } from '../State';
@@ -909,6 +909,7 @@ export class SystemBoard {
     public features: FeatureCommands = new FeatureCommands(this);
     public chlorinator: ChlorinatorCommands = new ChlorinatorCommands(this);
     public heaters: HeaterCommands = new HeaterCommands(this);
+    public covers: CoverCommands = new CoverCommands(this);
     public filters: FilterCommands = new FilterCommands(this);
     public chemControllers: ChemControllerCommands = new ChemControllerCommands(this);
     public chemDosers: ChemDoserCommands = new ChemDoserCommands(this);
@@ -5296,5 +5297,13 @@ export class FilterCommands extends BoardCommands {
             sfilter.emitEquipmentChange();
             return filter;
         } catch (err) { logger.error(`deleteFilterAsync: Error deleting filter ${err.message}`); }
+    }
+}
+// ISSUE-080: Cover configuration write path. Base class rejects — only IntelliCenter implements
+// the Action 168 cat=14 outbound encoding. Kept controller-agnostic per AGENTS.md rule 7
+// (no controller-specific branching in SystemBoard).
+export class CoverCommands extends BoardCommands {
+    public async setCoverAsync(data: any): Promise<Cover> {
+        return Promise.reject(new InvalidOperationError(`Cover configuration is not supported on this controller`, 'setCoverAsync'));
     }
 }

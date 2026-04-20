@@ -547,6 +547,39 @@ export class ConfigRoute {
             };
             return res.status(200).send(opts);
         });
+        // ISSUE-075 #6 / ISSUE-080: expose the IntelliCenter cover configuration surface so
+        // dashPanel (or any API consumer) can render the Controllers → Covers page.
+        //
+        // Response shape:
+        //   {
+        //     maxCovers: 2 (IntelliCenter hard-cap: A/D Cover Module part 522039 supports 2),
+        //     bodyOptions: [{ val, name }, ...],          // Pool / Spa valueMap rows
+        //     availableCircuits: [...getCircuitReferences], // picker list for "Affected Circuits"
+        //     covers: [ { id, name, isActive, body, normallyOn, chlorActive, chlorOutput,
+        //                 chlorOutputMax, circuits: [ids], ... } ]
+        //   }
+        //
+        // `chlorOutputMax` is per-body (Pool 0-50, Spa 0-10) — the OCP enforces this; mirroring
+        // it in the API lets dashPanel cap its slider without a second round-trip.
+        app.get('/config/options/covers', (req, res) => {
+            const poolBodyId = sys.board.valueMaps.bodies.getValue('pool');
+            const spaBodyId = sys.board.valueMaps.bodies.getValue('spa');
+            const covers = sys.covers.get().map((c: any) => {
+                const bodyVal = sys.board.valueMaps.bodies.encode(c.body);
+                const chlorOutputMax = bodyVal === spaBodyId ? 10 : 50;
+                return Object.assign({}, c, { chlorOutputMax });
+            });
+            const opts = {
+                maxCovers: 2,
+                bodyOptions: [
+                    { val: poolBodyId, name: 'Pool' },
+                    { val: spaBodyId, name: 'Spa' }
+                ],
+                availableCircuits: sys.board.circuits.getCircuitReferences(true, true, false, false),
+                covers
+            };
+            return res.status(200).send(opts);
+        });
         app.get('/config/options/filters', async (req, res, next) => {
             try {
                 let opts = {
@@ -875,6 +908,17 @@ export class ConfigRoute {
                 return res.status(200).send((heater as Heater).get(true));
             }
             catch (err) { next(err); }
+        });
+        // ISSUE-075 #7 / ISSUE-080: cover config write path. Body / normallyOn / chlorActive /
+        // chlorOutput / circuits — name is read-only (OCP exposes no rename UI for covers;
+        // see .plan/v3.008/covers-packet-reference.md §4.1). The board implementation is
+        // responsible for enforcing the Pool 0-50 / Spa 0-10 output cap and the 1-cover-per-body
+        // Pentair constraint.
+        app.put('/config/cover', async (req, res, next) => {
+            try {
+                let cover = await sys.board.covers.setCoverAsync(req.body);
+                return res.status(200).send(sys.covers.getItemById(cover.id).get(true));
+            } catch (err) { next(err); }
         });
 
         /***** END OF ENDPOINTS FOR MODIFYINC THE OUTDOOR CONTROL PANEL SETTINGS *****/

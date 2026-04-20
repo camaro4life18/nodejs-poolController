@@ -2206,6 +2206,18 @@ export class CoverState extends EqState {
     public set name(val: string) { this.setDataVal('name', val); }
     public get isClosed(): boolean { return this.data.isClosed; }
     public set isClosed(val: boolean) { this.setDataVal('isClosed', val); }
+    // Rule 18: mirror config fields that dashPanel renders on the Controllers/Covers tab so the
+    // UI doesn't lag between a config PUT and the next OCP rebroadcast.
+    public get isActive(): boolean { return this.data.isActive; }
+    public set isActive(val: boolean) { this.setDataVal('isActive', val); }
+    public get body(): number | any { return this.data.body; }
+    public set body(val: number | any) { this.setDataVal('body', sys.board.valueMaps.bodies.encode(val)); }
+    public get normallyOn(): boolean { return this.data.normallyOn; }
+    public set normallyOn(val: boolean) { this.setDataVal('normallyOn', val); }
+    public get chlorActive(): boolean { return this.data.chlorActive; }
+    public set chlorActive(val: boolean) { this.setDataVal('chlorActive', val); }
+    public get chlorOutput(): number { return this.data.chlorOutput; }
+    public set chlorOutput(val: number) { this.setDataVal('chlorOutput', val); }
 }
 export class ChlorinatorStateCollection extends EqStateCollection<ChlorinatorState> {
     public superChlor: { id: number, lastDispatch: number, reference: number }[] = [];

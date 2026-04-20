@@ -15,7 +15,7 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
-import { sys, Chlorinator } from "../../../Equipment";
+import { sys, Chlorinator, Cover } from "../../../Equipment";
 import { Inbound } from "../Messages";
 import { state } from "../../../State";
 import { logger } from "../../../../logger/Logger"
@@ -44,6 +44,11 @@ export class ChlorinatorMessage {
                 // superChlor on-flag location is NOT yet characterised on v3 — deferred.
                 if (sys.equipment.isIntellicenterV3) {
                     const SLOT_STRIDE = 9;
+                    // ISSUE-075 #4 / ISSUE-080: the same packet carries the cover-menu "IntelliChlor
+                    // Output" at slot-0 offsets 7 (Pool, 0-50) and 8 (Spa, 0-10). Capture once here
+                    // and apply to whichever covers are bound to those bodies.
+                    let poolCoverOutput: number | undefined;
+                    let spaCoverOutput: number | undefined;
                     for (let slot = 0; slot < 4; slot++) {
                         const base = 2 + slot * SLOT_STRIDE;
                         if (base + SLOT_STRIDE > msg.payload.length) break;
@@ -74,6 +79,33 @@ export class ChlorinatorMessage {
                         sc.model = c.model;
                         sc.name = c.name;
                         sc.superChlorHours = c.superChlorHours;
+
+                        // Only slot 0 carries the cover-output bytes per current evidence. If a
+                        // multi-chlor install surfaces with populated bytes on other slots we can
+                        // widen this.
+                        if (slot === 0) {
+                            poolCoverOutput = msg.extractPayloadByte(base + 7);
+                            spaCoverOutput = msg.extractPayloadByte(base + 8);
+                        }
+                    }
+                    // Apply cover-menu IntelliChlor Output to covers (per-body routing).
+                    if (typeof poolCoverOutput !== 'undefined' || typeof spaCoverOutput !== 'undefined') {
+                        const poolBodyId = sys.board.valueMaps.bodies.getValue('pool');
+                        const spaBodyId = sys.board.valueMaps.bodies.getValue('spa');
+                        const covers = sys.covers.get();
+                        for (let i = 0; i < covers.length; i++) {
+                            const cov: Cover = sys.covers.getItemById(covers[i].id);
+                            if (!cov || !cov.isActive) continue;
+                            const scov = state.covers.getItemById(cov.id, true);
+                            const bodyVal = sys.board.valueMaps.bodies.encode(cov.body);
+                            if (bodyVal === poolBodyId && typeof poolCoverOutput !== 'undefined') {
+                                cov.chlorOutput = poolCoverOutput;
+                                scov.chlorOutput = poolCoverOutput;
+                            } else if (bodyVal === spaBodyId && typeof spaCoverOutput !== 'undefined') {
+                                cov.chlorOutput = spaCoverOutput;
+                                scov.chlorOutput = spaCoverOutput;
+                            }
+                        }
                     }
                     state.emitEquipmentChanges();
                     msg.isProcessed = true;
