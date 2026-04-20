@@ -96,6 +96,8 @@ export class OptionsMessage {
                                     : sys.board.valueMaps.tempUnits.getValue('F');
                                 sys.general.options.units = mappedUnits;
                                 state.temps.units = mappedUnits;
+                                const bodyUnits = mappedUnits === sys.board.valueMaps.tempUnits.getValue('C') ? 2 : 1;
+                                for (let i = 0; i < sys.bodies.length; i++) sys.bodies.getItemByIndex(i).capacityUnits = bodyUnits;
                             }
 
                             // v3.004+: payload layout shifted by 1 byte vs v1.x (timestamp insertion earlier in the packet).

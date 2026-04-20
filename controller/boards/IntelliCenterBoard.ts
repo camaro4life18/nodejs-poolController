@@ -27,6 +27,11 @@ import { utils, ControllerType } from '../../controller/Constants';
 import { InvalidEquipmentIdError, InvalidEquipmentDataError, EquipmentNotFoundError, MessageError, InvalidOperationError } from '../Errors';
 import { ncp } from '../nixie/Nixie';
 import { Timestamp } from "../Constants"
+const INTELLICENTER_MAX_NAME_LENGTH = 15;
+const normalizeIntelliCenterName = (name: any, fallback: string = ''): string => {
+    const source = typeof name !== 'undefined' ? name : fallback || '';
+    return source.toString().substring(0, INTELLICENTER_MAX_NAME_LENGTH);
+};
 export class IntelliCenterBoard extends SystemBoard {
     private static readonly DEFAULT_REGISTRATION_DEVICE_ID = [2, 110, 106, 115, 80, 67];
     private static readonly ICP_REGISTRATION_DEVICE_TYPE = 1;
@@ -987,10 +992,16 @@ class IntelliCenterConfigQueue extends ConfigQueue {
     private static readonly WATCHDOG_POLL_MS = 5000;
     private _watchdogTimer?: NodeJS.Timeout;
     private _lastProgressMs: number = 0;
+    private _maxPercentEmitted: number = 0;
     public close() {
         this.stopWatchdog();
         this._processing = false;
+        this._maxPercentEmitted = 0;
         super.close();
+    }
+    private getDisplayPercent(): number {
+        this._maxPercentEmitted = Math.max(this._maxPercentEmitted, this.percent);
+        return this._maxPercentEmitted;
     }
     private markProgress(): void {
         if (!this._processing) return;
@@ -1020,6 +1031,7 @@ class IntelliCenterConfigQueue extends ConfigQueue {
         this._processing = false;
         this._failed = false;
         this._newRequest = false;
+        this._maxPercentEmitted = 0;
         this.stopWatchdog();
         state.status = 1;
         state.emitControllerChange();
@@ -1037,7 +1049,12 @@ class IntelliCenterConfigQueue extends ConfigQueue {
                     if (!this.curr.failed) {
                         // Call the identified callback.  This may add additional items.
                         if (typeof this.curr.oncomplete === 'function') {
+                            const beforeCount = this.curr.items.length;
                             this.curr.oncomplete(this.curr);
+                            const addedItems = this.curr.items.length - beforeCount;
+                            if (addedItems > 0) {
+                                this.totalItems += addedItems;
+                            }
                             this.curr.oncomplete = undefined;
                         }
                         // Let the process add in any additional information we might need.  When it does
@@ -1058,10 +1075,11 @@ class IntelliCenterConfigQueue extends ConfigQueue {
         if (!this.curr) {
             // There never was anything for us to do. We will likely never get here.
             state.status = 1;
+            this._maxPercentEmitted = 0;
             state.emitControllerChange();
             return;
         } else
-            state.status = sys.board.valueMaps.controllerStatus.transform(2, this.percent);
+            state.status = sys.board.valueMaps.controllerStatus.transform(2, this.getDisplayPercent());
         // Shift to the next config queue item.
         while (
             this.queue.length > 0 &&
@@ -1109,6 +1127,7 @@ class IntelliCenterConfigQueue extends ConfigQueue {
             state.status = 1;
             this.curr = null;
             this._processing = false;
+            this._maxPercentEmitted = 0;
             this.stopWatchdog();
             if (this._failed) setTimeout(() => { sys.checkConfiguration(); }, 100);
             logger.info(`Configuration Complete`);
@@ -1165,6 +1184,7 @@ class IntelliCenterConfigQueue extends ConfigQueue {
             this._processing = false;
             this._failed = false;
             this._newRequest = false;
+            this._maxPercentEmitted = 0;
             this.stopWatchdog();
             state.status = 1;
             state.emitControllerChange();
@@ -1177,6 +1197,7 @@ class IntelliCenterConfigQueue extends ConfigQueue {
         this.queue.length = 0;
         this.curr = null;
         this.totalItems = 0;
+        this._maxPercentEmitted = 0;
         this._processing = true;
         this._failed = false;
         this.markProgress();
@@ -1340,13 +1361,14 @@ class IntelliCenterSystemCommands extends SystemCommands {
     public async setGeneralAsync(obj?: any): Promise<General> {
         try {
             if (typeof obj.alias === 'string' && obj.alias !== sys.general.alias) {
+                const alias = normalizeIntelliCenterName(obj.alias, sys.general.alias);
                 let out = Outbound.create({
                     action: 168,
                     payload: [12, 0, 0],
                     retries: 3
-                }).appendPayloadString(obj.alias, 16);
+                }).appendPayloadString(alias, 16);
                 await out.sendAsync();
-                sys.general.alias = obj.alias;
+                sys.general.alias = alias;
             }
             if (typeof obj.options !== 'undefined') {
                 try {
@@ -1664,6 +1686,8 @@ class IntelliCenterSystemCommands extends SystemCommands {
                     }
                     sys.general.options.units = requestedUnits;
                     state.temps.units = requestedUnits;
+                    const bodyUnits = requestedUnits === sys.board.valueMaps.tempUnits.getValue('C') ? 2 : 1;
+                    for (let i = 0; i < sys.bodies.length; i++) sys.bodies.getItemByIndex(i).capacityUnits = bodyUnits;
                     state.emitEquipmentChanges();
                 }
             }
@@ -1854,15 +1878,16 @@ class IntelliCenterSystemCommands extends SystemCommands {
         let arr = [];
         try {
             if (typeof obj.name === 'string' && obj.name !== sys.general.owner.name) {
+                const ownerName = normalizeIntelliCenterName(obj.name, sys.general.owner.name);
                 let out = Outbound.create({
                     action: 168,
                     retries: 5,
                     payload: [12, 0, 2],
                     response: IntelliCenterBoard.getAckResponse(168)
                 });
-                out.appendPayloadString(obj.name, 16);
+                out.appendPayloadString(ownerName, 16);
                 await out.sendAsync();
-                sys.general.owner.name = obj.name;
+                sys.general.owner.name = ownerName;
             }
             if (typeof obj.email === 'string' && obj.email !== sys.general.owner.email) {
                 let out = Outbound.create({
@@ -2096,9 +2121,10 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
                 retries: 3
             });
             for (let i = 0; i < 16; i++) out.payload.push(255);
-            out.appendPayloadString(typeof obj.name !== 'undefined' ? obj.name : group.name, 16);
+            const groupName = normalizeIntelliCenterName(obj.name, group.name);
+            out.appendPayloadString(groupName, 16);
             await out.sendAsync();
-            if (typeof obj.name !== 'undefined') sgroup.name = group.name = obj.name.toString().substring(0, 16);
+            if (typeof obj.name !== 'undefined') sgroup.name = group.name = groupName;
             out = Outbound.create({
                 action: 168,
                 payload: [6, 2, id - sys.board.equipmentIds.circuitGroups.start],
@@ -2159,7 +2185,7 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
                 retries: 3
             });
             for (let i = 0; i < 16; i++) out.payload.push(255);
-            out.appendPayloadString(group.name || '', 16);
+            out.appendPayloadString(normalizeIntelliCenterName(group.name), 16);
             await out.sendAsync();
             out = Outbound.create({
                 action: 168,
@@ -2265,9 +2291,10 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
             });
             for (let i = 0; i < 16; i++) out.payload.push(255);
             out.payload[3] = 10;
-            out.appendPayloadString(typeof obj.name !== 'undefined' ? obj.name : group.name, 16);
+            const groupName = normalizeIntelliCenterName(obj.name, group.name);
+            out.appendPayloadString(groupName, 16);
             await out.sendAsync();
-            if (typeof obj.name !== 'undefined') sgroup.name = group.name = obj.name.toString().substring(0, 16);
+            if (typeof obj.name !== 'undefined') sgroup.name = group.name = groupName;
 
             out = Outbound.create({
                 action: 168,
@@ -2292,7 +2319,7 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
                     out.payload.push(group.circuits.getItemByIndex(i, false).color);
                 }
             }
-            out.appendPayloadString(obj.name || group.name, 16);
+            out.appendPayloadString(groupName, 16);
             await out.sendAsync();
             if (typeof obj.circuits !== 'undefined') {
                 for (let i = 0; i < obj.circuits.length; i++) {
@@ -2874,7 +2901,7 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
                 cstate.action = sys.board.valueMaps.circuitActions.getValue('lighttheme');
                 out.response = IntelliCenterBoard.getAckResponse(168);
                 out.retries = 5;
-                out.appendPayloadString(circuit.name, 16);
+                out.appendPayloadString(normalizeIntelliCenterName(circuit.name), 16);
                 await out.sendAsync();
                 circuit.lightingTheme = theme;
                 cstate.lightingTheme = theme;
@@ -2912,7 +2939,7 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
                 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255 // Colors 
             ]
         });
-        msgs.msg1.appendPayloadString(group.name, 16);
+        msgs.msg1.appendPayloadString(normalizeIntelliCenterName(group.name), 16);
         if (group.type === 1) {
             let lg = group as LightGroup;
             for (let i = 0; i < group.circuits.length; i++)
@@ -3081,7 +3108,7 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
                 response: IntelliCenterBoard.getAckResponse(168),
                 retries: 5
             });
-            out.appendPayloadString(circuit.name, 16);
+            out.appendPayloadString(normalizeIntelliCenterName(circuit.name), 16);
             await out.sendAsync();
             circuit.level = level;
             cstate.level = level;
@@ -3200,7 +3227,7 @@ class IntelliCenterFeatureCommands extends FeatureCommands {
                 (typeof data.showInFeatures !== 'undefined' ? utils.makeBool(data.showInFeatures) : feature.showInFeatures) ? 1 : 0,
                 eggHrs, eggMins, data.dontStop ? 1 : 0]
         });
-        let nameStr = typeof data.name !== 'undefined' ? data.name.toString().substring(0, 15) : feature.name;
+        let nameStr = normalizeIntelliCenterName(data.name, feature.name);
         out.appendPayloadString(nameStr, 16);
         await out.sendAsync();
         feature = sys.features.getItemById(id, true);
@@ -3228,7 +3255,7 @@ class IntelliCenterFeatureCommands extends FeatureCommands {
             response: IntelliCenterBoard.getAckResponse(168),
             retries: 5
         });
-        out.appendPayloadString(typeof data.name !== 'undefined' ? data.name.toString() : feature.name, 16);
+        out.appendPayloadString(normalizeIntelliCenterName(data.name, feature.name), 16);
         await out.sendAsync();
         sys.features.removeItemById(id);
         feature.isActive = false;
@@ -3254,7 +3281,7 @@ class IntelliCenterChlorinatorCommands extends ChlorinatorCommands {
         let chlor = sys.chlorinators.getItemById(id);
         if (chlor.master !== 0 && !isAdd) return super.setChlorAsync(obj);
 
-        let name = obj.name || chlor.name || 'IntelliChlor' + id;
+        let name = normalizeIntelliCenterName(obj.name, chlor.name || 'IntelliChlor' + id);
         let superChlorHours = parseInt(obj.superChlorHours, 10);
         if (typeof obj.superChlorinate !== 'undefined') obj.superChlor = utils.makeBool(obj.superChlorinate);
         let superChlorinate = typeof obj.superChlor === 'undefined' ? undefined : utils.makeBool(obj.superChlor);
@@ -3402,7 +3429,7 @@ class IntelliCenterPumpCommands extends PumpCommands {
                 }
             }
         }
-        outName.appendPayloadString(pump.name, 16);
+        outName.appendPayloadString(normalizeIntelliCenterName(pump.name), 16);
         return [outSettings, outName];
     }
     /*     public setPumpCircuit(pump: Pump, pumpCircuitDeltas: any) {
@@ -3432,7 +3459,8 @@ class IntelliCenterPumpCommands extends PumpCommands {
             //[255, 0, 255][165, 63, 15, 33, 168, 33][4, 0, 0, 3, 0, 96, 194, 1, 122, 13, 15, 130,  1, 196, 9, 640, 255, 255, 5, 0, 251, 128, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0][14, 231]
             //[255, 0, 255][165, 63, 15, 33, 168, 34][4, 0, 0, 3, 0, 96, 194, 1, 122, 13, 15, 130,  1, 196, 9, 300, 255,   3, 5, 0, 251, 128, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0][12, 152]
             if (isNaN(id)) return Promise.reject(new Error(`Invalid pump id: ${data.id}`));
-            else if (id >= sys.equipment.maxPumps) return Promise.reject(new Error(`Pump id out of range: ${data.id}`));
+            // maxPumps is the count of pump slots (ids 1..maxPumps); reject only when strictly above that range
+            else if (id > sys.equipment.maxPumps) return Promise.reject(new Error(`Pump id out of range: ${id}`));
             // We now need to get the type for the pump.  If the incoming data doesn't include it then we need to
             // get it from the current pump configuration.
             let ntype = (typeof data.type === 'undefined' || isNaN(parseInt(data.type, 10))) ? pump.type : parseInt(data.type, 10);
@@ -3448,31 +3476,58 @@ class IntelliCenterPumpCommands extends PumpCommands {
             const isV3 = sys.equipment.isIntellicenterV3;
             const dest = isV3 ? 16 : 15;
             let outc = Outbound.create({ dest, action: 168, payload: [4, 0, id - 1, ntype, 0] });
-            outc.appendPayloadByte(parseInt(data.address, 10), id + 95);        // 5
+            const normalizeNumber = (value: any): number | undefined => {
+                const parsed = parseInt(value, 10);
+                return isNaN(parsed) ? undefined : parsed;
+            };
+            const pickNumber = (...candidates: any[]): number | undefined => {
+                for (const candidate of candidates) {
+                    const parsed = normalizeNumber(candidate);
+                    if (typeof parsed !== 'undefined') return parsed;
+                }
+                return undefined;
+            };
+            const toIntelliCenterAddress = (address: number | undefined): number | undefined => {
+                if (typeof address === 'undefined') return undefined;
+                // API/UI uses 1..16 slots; wire payload uses 96..111.
+                if (address > 0 && address <= 16) return address + 95;
+                return address;
+            };
+            const resolvedAddress = toIntelliCenterAddress(pickNumber(data.address, pump.address, id + 95));
+            const resolvedMinSpeed = pickNumber(data.minSpeed, pump.minSpeed, type.minSpeed, 450);
+            const resolvedMaxSpeed = pickNumber(data.maxSpeed, pump.maxSpeed, type.maxSpeed, 3450);
+            const resolvedMinFlow = pickNumber(data.minFlow, pump.minFlow, type.minFlow, 0);
+            const resolvedMaxFlow = pickNumber(data.maxFlow, pump.maxFlow, type.maxFlow, 130);
+            const resolvedFlowStepSize = pickNumber(data.flowStepSize, pump.flowStepSize, type.flowStepSize, 1);
+            const resolvedPrimingSpeed = pickNumber(data.primingSpeed, pump.primingSpeed, type.primingSpeed, 2500);
+            const resolvedSpeedStepSize = pickNumber(data.speedStepSize, pump.speedStepSize, type.speedStepSize, 10);
+            const resolvedPrimingTime = pickNumber(data.primingTime, pump.primingTime, type.maxPrimingTime, 0);
+            outc.appendPayloadByte(resolvedAddress, id + 95);        // 5
             // v3.004+ uses big-endian for 16-bit speed/flow values
             if (isV3) {
-                outc.appendPayloadIntBE(parseInt(data.minSpeed, 10), pump.minSpeed);  // 6
-                outc.appendPayloadIntBE(parseInt(data.maxSpeed, 10), pump.maxSpeed);  // 8
+                outc.appendPayloadIntBE(resolvedMinSpeed, 450);  // 6
+                outc.appendPayloadIntBE(resolvedMaxSpeed, 3450);  // 8
             } else {
-                outc.appendPayloadInt(parseInt(data.minSpeed, 10), pump.minSpeed);  // 6
-                outc.appendPayloadInt(parseInt(data.maxSpeed, 10), pump.maxSpeed);  // 8
+                outc.appendPayloadInt(resolvedMinSpeed, 450);  // 6
+                outc.appendPayloadInt(resolvedMaxSpeed, 3450);  // 8
             }
-            outc.appendPayloadByte(parseInt(data.minFlow, 10), pump.minFlow);   // 10
-            outc.appendPayloadByte(parseInt(data.maxFlow, 10), pump.maxFlow);   // 11
-            outc.appendPayloadByte(parseInt(data.flowStepSize, 10), pump.flowStepSize || 1); // 12
+            outc.appendPayloadByte(resolvedMinFlow, 0);   // 10
+            outc.appendPayloadByte(resolvedMaxFlow, 130);   // 11
+            outc.appendPayloadByte(resolvedFlowStepSize, 1); // 12
             if (isV3) {
-                outc.appendPayloadIntBE(parseInt(data.primingSpeed, 10), pump.primingSpeed || 2500); // 13
+                outc.appendPayloadIntBE(resolvedPrimingSpeed, 2500); // 13
             } else {
-                outc.appendPayloadInt(parseInt(data.primingSpeed, 10), pump.primingSpeed || 2500); // 13
+                outc.appendPayloadInt(resolvedPrimingSpeed, 2500); // 13
             }
-            outc.appendPayloadByte(typeof data.speedStepSize !== 'undefined' ? parseInt(data.speedStepSize, 10) / 10 : pump.speedStepSize / 10, 1); // 15
-            outc.appendPayloadByte(parseInt(data.primingTime, 10), pump.primingTime || 0); // 17
+            outc.appendPayloadByte(Math.max(1, Math.floor((resolvedSpeedStepSize || 10) / 10)), 1); // 15
+            outc.appendPayloadByte(resolvedPrimingTime, 0); // 17
             outc.appendPayloadByte(255); //
             outc.appendPayloadBytes(255, 8);    // 18
             outc.appendPayloadBytes(0, 8);      // 26
             let outn = Outbound.create({ dest, action: 168, payload: [4, 1, id - 1] });
             outn.appendPayloadBytes(0, 16);
-            outn.appendPayloadString(data.name, 16, pump.name || type.name);
+            const pumpName = normalizeIntelliCenterName(data.name, pump.name || type.name);
+            outn.appendPayloadString(pumpName, 16);
             const isDualSpeed = type.name === 'ds';
             const circuitPayloadNdx = isDualSpeed ? 19 : 18;
             const unitsPayloadNdx = isDualSpeed ? 27 : 26;
@@ -3486,11 +3541,18 @@ class IntelliCenterPumpCommands extends PumpCommands {
                 if (body === 32) return poolSpaBody;
                 return body;
             };
+            const toBodyWireCode = (body: number) => {
+                if (body === spaBody) return 1;
+                if (body === poolSpaBody) return 32;
+                return 0;
+            };
             const requestedBody = normalizeBody(sys.board.valueMaps.pumpBodies.encode(data.body));
             const currentBody = normalizeBody(sys.board.valueMaps.pumpBodies.encode(pump.body));
             const bodyPayload = (!isNaN(requestedBody) && sys.board.valueMaps.pumpBodies.valExists(requestedBody))
                 ? requestedBody
                 : ((!isNaN(currentBody) && sys.board.valueMaps.pumpBodies.valExists(currentBody)) ? currentBody : poolBody);
+            const bodyWireCode = toBodyWireCode(bodyPayload);
+            if (type.hasBody === true) outc.setPayloadByte(10, bodyWireCode);
             if (isDualSpeed) outc.setPayloadByte(18, bodyPayload);
             if (type.name === 'ss') {
                 outc.setPayloadByte(5, 0); // Clear the pump address
@@ -3504,7 +3566,7 @@ class IntelliCenterPumpCommands extends PumpCommands {
                     outc.setPayloadInt(6, type.minSpeed, 450);
                     outc.setPayloadInt(8, type.maxSpeed, 3450);
                 }
-                outc.setPayloadByte(10, type.minFlow, 0);
+                outc.setPayloadByte(10, bodyWireCode);
                 outc.setPayloadByte(11, type.maxFlow, 130);
                 outc.setPayloadByte(12, 1);
                 if (isV3) {
@@ -3557,6 +3619,8 @@ class IntelliCenterPumpCommands extends PumpCommands {
                                 let flow = parseInt(c.flow, 10);
                                 let existingSpeed = parseInt(circ.speed as any, 10);
                                 let existingFlow = parseInt(circ.flow as any, 10);
+                                let speedChanged = !isNaN(speed) && (isNaN(existingSpeed) || speed !== existingSpeed);
+                                let flowChanged = !isNaN(flow) && (isNaN(existingFlow) || flow !== existingFlow);
                                 let circuit = i < type.maxCircuits ? parseInt(c.circuit, 10) : 256;
                                 let currentCircuit = parseInt(circ.circuit as any, 10);
                                 let circuitByte = !isNaN(circuit) ? circuit - 1 : (!isNaN(currentCircuit) ? currentCircuit - 1 : 255);
@@ -3575,6 +3639,9 @@ class IntelliCenterPumpCommands extends PumpCommands {
                                 // emitting NaN bytes in the outbound Action 168 payload.
                                 if (units === rpmUnits && isNaN(speed) && !isNaN(flow)) units = gpmUnits;
                                 else if (units === gpmUnits && isNaN(flow) && !isNaN(speed)) units = rpmUnits;
+                                // If only one side changed, trust the side that changed even when units are stale.
+                                else if (flowChanged && !speedChanged && typeof type.minFlow !== 'undefined') units = gpmUnits;
+                                else if (speedChanged && !flowChanged && typeof type.minSpeed !== 'undefined') units = rpmUnits;
                                 outc.setPayloadByte(i + circuitPayloadNdx, circuitByte, 255);
                                 if (typeof type.minSpeed !== 'undefined' && units === rpmUnits) {
                                     outc.setPayloadByte(i + unitsPayloadNdx, 0); // Set to rpm
@@ -3626,7 +3693,11 @@ class IntelliCenterPumpCommands extends PumpCommands {
                 if (typeof data.body !== 'undefined') pump.body = bodyPayload;
             }
             else {
-                if (typeof data.address !== 'undefined') pump.address = data.address;
+                if (typeof data.address !== 'undefined') {
+                    const parsedAddress = normalizeNumber(data.address);
+                    const normalizedAddress = toIntelliCenterAddress(parsedAddress);
+                    if (typeof normalizedAddress !== 'undefined') pump.address = normalizedAddress;
+                }
                 if (typeof data.primingTime !== 'undefined') pump.primingTime = parseInt(data.primingTime, 10);
                 if (typeof data.primingSpeed !== 'undefined') pump.primingSpeed = parseInt(data.primingSpeed, 10);
                 if (typeof data.minSpeed !== 'undefined') pump.minSpeed = parseInt(data.minSpeed, 10);
@@ -3668,7 +3739,7 @@ class IntelliCenterPumpCommands extends PumpCommands {
             // We have been successful so lets set our pump with the new data.
             pump = sys.pumps.getItemById(id, true);
             spump = state.pumps.getItemById(id, true);
-            if (typeof data.name !== 'undefined') spump.name = pump.name = data.name;
+            if (typeof data.name !== 'undefined') spump.name = pump.name = pumpName;
             spump.type = pump.type = ntype;
             if (type.name !== 'ss') {
                 if (typeof data.circuits !== 'undefined') {
@@ -3681,16 +3752,39 @@ class IntelliCenterPumpCommands extends PumpCommands {
                             let circuitId = typeof c.circuit !== 'undefined' ? parseInt(c.circuit, 10) : pump.circuits.getItemById(i, false).circuit;
                             let circ = pump.circuits.getItemByIndex(i, true);
                             circ.circuit = circuitId;
-                            circ.units = parseInt(c.units || circ.units, 10);
+                            const rpmUnits = sys.board.valueMaps.pumpUnits.getValue('rpm');
+                            const gpmUnits = sys.board.valueMaps.pumpUnits.getValue('gpm');
                             let speed = parseInt(c.speed, 10);
                             let flow = parseInt(c.flow, 10);
-                            if (isNaN(speed)) speed = type.minSpeed || 0;
-                            if (isNaN(flow)) flow = type.minFlow || 0;
-                            //console.log({ flow: flow, speed: speed, type: JSON.stringify(type) });
-                            if (circ.units === 1 && typeof type.minFlow !== 'undefined')
-                                circ.flow = Math.max(flow, type.minFlow);
-                            else if (circ.units === 0 && typeof type.minSpeed !== 'undefined')
-                                circ.speed = Math.max(speed, type.minSpeed);
+                            let existingSpeed = parseInt(circ.speed as any, 10);
+                            let existingFlow = parseInt(circ.flow as any, 10);
+                            let speedChanged = !isNaN(speed) && (isNaN(existingSpeed) || speed !== existingSpeed);
+                            let flowChanged = !isNaN(flow) && (isNaN(existingFlow) || flow !== existingFlow);
+                            let units: number;
+                            if (type.name === 'vf') units = gpmUnits;
+                            else if (type.name === 'vs') units = rpmUnits;
+                            else {
+                                units = sys.board.valueMaps.pumpUnits.encode(c.units);
+                                if (isNaN(units)) units = parseInt(circ.units as any, 10);
+                                if (isNaN(units)) units = !isNaN(flow) && isNaN(speed) ? gpmUnits : rpmUnits;
+                            }
+                            if (units === rpmUnits && isNaN(speed) && !isNaN(flow)) units = gpmUnits;
+                            else if (units === gpmUnits && isNaN(flow) && !isNaN(speed)) units = rpmUnits;
+                            else if (flowChanged && !speedChanged && typeof type.minFlow !== 'undefined') units = gpmUnits;
+                            else if (speedChanged && !flowChanged && typeof type.minSpeed !== 'undefined') units = rpmUnits;
+                            circ.units = units;
+                            if (circ.units === gpmUnits && typeof type.minFlow !== 'undefined') {
+                                const minFlow = (typeof type.minFlow === 'number' && !isNaN(type.minFlow)) ? type.minFlow : 15;
+                                const flowCandidate = !isNaN(flow) ? flow : existingFlow;
+                                circ.flow = !isNaN(flowCandidate) ? Math.max(flowCandidate, minFlow) : minFlow;
+                                circ.speed = undefined;
+                            }
+                            else if (circ.units === rpmUnits && typeof type.minSpeed !== 'undefined') {
+                                const minSpeed = (typeof type.minSpeed === 'number' && !isNaN(type.minSpeed)) ? type.minSpeed : 450;
+                                const speedCandidate = !isNaN(speed) ? speed : existingSpeed;
+                                circ.speed = !isNaN(speedCandidate) ? Math.max(speedCandidate, minSpeed) : minSpeed;
+                                circ.flow = undefined;
+                            }
                         }
                     }
                 }
@@ -3914,6 +4008,7 @@ class IntelliCenterBodyCommands extends BodyCommands {
         }
         try {
             if (typeof obj.name === 'string' && obj.name !== body.name) {
+                const bodyName = normalizeIntelliCenterName(obj.name, body.name);
                 let out = Outbound.create({
                     action: 168,
                     payload: [13, 0, byte],
@@ -3921,9 +4016,9 @@ class IntelliCenterBodyCommands extends BodyCommands {
                     response: IntelliCenterBoard.getAckResponse(168)
                 });
 
-                out.appendPayloadString(obj.name, 16);
+                out.appendPayloadString(bodyName, 16);
                 await out.sendAsync();
-                body.name = obj.name;
+                body.name = bodyName;
             }
             if (typeof obj.capacity !== 'undefined') {
                 let cap = parseInt(obj.capacity, 10);
@@ -4720,14 +4815,15 @@ class IntelliCenterValveCommands extends ValveCommands {
         // the ability to set these valves appropriately via the interface by subtracting 1 from the circuit and the valve id.  In
         // shared body systems there is a gap for the additional intake/return valves that exist in i10d.
         let v = extend(true, valve.get(true), obj);
+        const nameStr = normalizeIntelliCenterName(v.name, valve.name);
         let out = Outbound.create({
             action: 168,
             payload: [9, 0, v.id - 1, v.circuit - 1],
             response: IntelliCenterBoard.getAckResponse(168),
             retries: 5
-        }).appendPayloadString(v.name, 16);
+        }).appendPayloadString(nameStr, 16);
         await out.sendAsync();
-        valve.name = v.name;
+        valve.name = nameStr;
         valve.circuit = v.circuit;
         valve.type = v.type;
         return valve;
@@ -4752,7 +4848,7 @@ export class IntelliCenterChemControllerCommands extends ChemControllerCommands 
         if (typeof address === 'undefined' || isNaN(address) || (address < 144 || address > 158)) return Promise.reject(new InvalidEquipmentDataError(`Invalid IntelliChem address`, 'chemController', address));
         if (typeof sys.chemControllers.find(elem => elem.id !== data.id && elem.type === ichemType && elem.address === address) !== 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Invalid IntelliChem address: Address is used on another IntelliChem`, 'chemController', address));
         // Now lets do all our validation to the incoming chem controller data.
-        let name = typeof data.name !== 'undefined' ? data.name : chem.name || `IntelliChem - ${address - 143}`;
+        let name = normalizeIntelliCenterName(data.name, chem.name || `IntelliChem - ${address - 143}`);
         let type = sys.board.valueMaps.chemControllerTypes.transformByName('intellichem');
         // So now we are down to the nitty gritty setting the data for the REM Chem controller.
         let calciumHardness = typeof data.calciumHardness !== 'undefined' ? parseInt(data.calciumHardness, 10) : chem.calciumHardness;

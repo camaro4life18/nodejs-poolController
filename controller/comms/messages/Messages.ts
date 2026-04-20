@@ -893,9 +893,7 @@ export class Inbound extends Message {
                         // v3.004+ piggyback: only route ACKs we care about (168/184) into a single handler
                         // to avoid doing extra work on every ACK frame.
                         if (this.payload.length === 1 && (this.payload[0] === 168 || this.payload[0] === 184)) {
-                            // TEST: disable ACK-triggered refresh for v3.008 piggyback A/B validation.
-                            // VersionMessage.processActionAck(this);
-                            this.isProcessed = true;
+                            VersionMessage.processActionAck(this);
                         } else {
                             this.isProcessed = true;
                         }

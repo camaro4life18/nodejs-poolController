@@ -21,6 +21,26 @@ import { state, ICircuitGroupState, LightGroupState, CircuitGroupState } from ".
 import { ControllerType, Timestamp, utils } from "../../../Constants";
 import { logger } from "../../../../logger/Logger";
 export class ExternalMessage {
+    private static normalizePumpBodyCode(rawBody: number): number {
+        const poolBody = sys.board.valueMaps.pumpBodies.getValue('pool');
+        const spaBody = sys.board.valueMaps.pumpBodies.getValue('spa');
+        const poolSpaBody = sys.board.valueMaps.pumpBodies.getValue('poolspa');
+        const sharedPool = sys.board.valueMaps.bodies.getValue('pool');
+        const sharedSpa = sys.board.valueMaps.bodies.getValue('spa');
+        const sharedPoolSpa = sys.board.valueMaps.bodies.getValue('poolspa');
+        if (rawBody === sharedPool) return poolBody;
+        if (rawBody === sharedSpa) return spaBody;
+        if (rawBody === sharedPoolSpa) return poolSpaBody;
+        return rawBody;
+    }
+    private static decodePumpBodyCode(rawBody: number): number | undefined {
+        const normalized = ExternalMessage.normalizePumpBodyCode(rawBody);
+        return sys.board.valueMaps.pumpBodies.valExists(normalized) ? normalized : undefined;
+    }
+    private static normalizeIntelliCenterPumpAddress(rawAddress: number): number {
+        if (rawAddress > 0 && rawAddress <= 16) return rawAddress + 95;
+        return rawAddress;
+    }
     public static processIntelliCenter(msg: Inbound): void {
         // IntelliCenter v3.x: treat Wireless/ICP/Indoor -> OCP packets as requests, not source-of-truth.
         // We are a bus listener, so we will see traffic not addressed to us; do not apply those requests to state.
@@ -668,7 +688,14 @@ export class ExternalMessage {
             cpump.type = type;
             spump.type = type;
             if (cpump.type >= 2) {
-                cpump.address = msg.extractPayloadByte(5);
+                const ptype = sys.board.valueMaps.pumpTypes.transform(cpump.type);
+                const hasBodyAssociation = ptype.hasBody === true;
+                const circuitStartNdx = hasBodyAssociation ? 19 : 18;
+                if (hasBodyAssociation) {
+                    const decodedBody = ExternalMessage.decodePumpBodyCode(msg.extractPayloadByte(18));
+                    if (typeof decodedBody !== 'undefined') cpump.body = decodedBody;
+                }
+                cpump.address = ExternalMessage.normalizeIntelliCenterPumpAddress(msg.extractPayloadByte(5));
                 cpump.minSpeed = readInt(6);
                 cpump.maxSpeed = readInt(8);
                 cpump.minFlow = msg.extractPayloadByte(10);
@@ -678,10 +705,10 @@ export class ExternalMessage {
                 cpump.speedStepSize = msg.extractPayloadByte(15) * 10;
                 cpump.primingTime = msg.extractPayloadByte(16);
                 cpump.circuits.clear();
-                for (let i = 18; i < msg.payload.length && i <= 25; i++) {
+                for (let i = circuitStartNdx; i < msg.payload.length && i <= 25; i++) {
                     let circuitId = msg.extractPayloadByte(i);
                     if (circuitId !== 255) {
-                        let circuit = cpump.circuits.getItemById(i - 17, true);
+                        let circuit = cpump.circuits.getItemById(i - (circuitStartNdx - 1), true);
                         circuit.circuit = circuitId + 1;
                         circuit.units = msg.extractPayloadByte(i + 8);
                     }
@@ -689,7 +716,10 @@ export class ExternalMessage {
             }
             else if (cpump.type === 1) {
                 cpump.circuits.clear();
-                cpump.circuits.add({ id: 1, body: msg.extractPayloadByte(18) });
+                const bodyAt10 = ExternalMessage.decodePumpBodyCode(msg.extractPayloadByte(10));
+                const bodyAt18 = ExternalMessage.decodePumpBodyCode(msg.extractPayloadByte(18));
+                const decodedBody = typeof bodyAt10 !== 'undefined' ? bodyAt10 : bodyAt18;
+                if (typeof decodedBody !== 'undefined') cpump.body = decodedBody;
             }
             if (cpump.type === 0) {
                 sys.pumps.removeItemById(cpump.id);
@@ -873,6 +903,8 @@ export class ExternalMessage {
                     : sys.board.valueMaps.tempUnits.getValue('F');
                 sys.general.options.units = mappedUnits;
                 state.temps.units = mappedUnits;
+                const bodyUnits = mappedUnits === sys.board.valueMaps.tempUnits.getValue('C') ? 2 : 1;
+                for (let i = 0; i < sys.bodies.length; i++) sys.bodies.getItemByIndex(i).capacityUnits = bodyUnits;
             }
             
             state.emitEquipmentChanges();

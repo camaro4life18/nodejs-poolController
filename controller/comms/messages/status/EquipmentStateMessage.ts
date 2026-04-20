@@ -195,6 +195,8 @@ export class EquipmentStateMessage {
                     // the only unit of measure native to the Touch controllers is temperature they chose to name these C or F.  However, with the njsPC extensions this is non-semantic
                     // since pressure, volume, and length have been introduced.
                     sys.general.options.units = state.temps.units = msg.extractPayloadByte(9) & 0x04;
+                    const bodyUnits = state.temps.units === sys.board.valueMaps.tempUnits.getValue('C') ? 2 : 1;
+                    for (let i = 0; i < sys.bodies.length; i++) sys.bodies.getItemByIndex(i).capacityUnits = bodyUnits;
                     state.valve = msg.extractPayloadByte(10);
 
 

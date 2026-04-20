@@ -27,7 +27,15 @@ export class EquipmentMessage {
         let body: Body;
         let sbody: BodyTempState;
         switch (sys.controllerType) {
-            case ControllerType.IntelliCenter:
+            case ControllerType.IntelliCenter: {
+                // v3.004+ encodes body capacity as a 16-bit big-endian value (×1000 gal) at [hi, lo].
+                // v1.x encodes it as a single byte (×1000 gal). See ISSUE-073.
+                const isIntellicenterV3 = sys.equipment.isIntellicenterV3 === true;
+                const readCapacity = (hiIdx: number, loIdx: number): number => {
+                    const hi = msg.extractPayloadByte(hiIdx, 0);
+                    const lo = msg.extractPayloadByte(loIdx, 0);
+                    return (isIntellicenterV3 ? ((hi << 8) | lo) : hi) * 1000;
+                };
                 switch (msg.extractPayloadByte(1)) {
                     case 0:
                         sys.equipment.name = msg.extractPayloadString(2, 16);
@@ -46,7 +54,7 @@ export class EquipmentMessage {
                         body = sys.bodies.getItemById(1, sys.equipment.maxBodies >= 1);
                         sbody = state.temps.bodies.getItemById(1, sys.equipment.maxBodies >= 1);
                         sbody.type = body.type = msg.extractPayloadByte(39);
-                        body.capacity = msg.extractPayloadByte(34) * 1000;
+                        body.capacity = readCapacity(34, 35);
                         if (body.isActive && sys.equipment.maxBodies === 0) sys.bodies.removeItemById(1);
                         body.isActive = sys.equipment.maxBodies > 0;
                         msg.isProcessed = true;
@@ -59,7 +67,7 @@ export class EquipmentMessage {
                             body = sys.bodies.getItemById(bodyId, true);
                             sbody = state.temps.bodies.getItemById(bodyId, true);
                             sbody.type = body.type = msg.extractPayloadByte(35);
-                            body.capacity = msg.extractPayloadByte(34) * 1000;
+                            body.capacity = readCapacity(34, 35);
                             body.isActive = true;
                         }
                         else {
@@ -85,7 +93,7 @@ export class EquipmentMessage {
                             // Only body3+ packets include type/capacity bytes here; avoid corrupting 2-body systems.
                             if (secondBodyId >= 3) {
                                 sbody.type = body.type = msg.extractPayloadByte(35);
-                                body.capacity = msg.extractPayloadByte(34) * 1000;
+                                body.capacity = readCapacity(34, 35);
                             }
                             body.isActive = secondBodyId <= sys.equipment.maxBodies;
                             sbody.name = body.name = msg.extractPayloadString(18, 16);
@@ -123,7 +131,7 @@ export class EquipmentMessage {
                             sbody = state.temps.bodies.getItemById(bodyId, bodyId <= sys.equipment.maxBodies);
                             sbody.name = body.name = msg.extractPayloadString(18, 16);
                             sbody.type = body.type = msg.extractPayloadByte(37);
-                            body.capacity = msg.extractPayloadByte(36) * 1000;
+                            body.capacity = readCapacity(36, 37);
                             if (body.isActive && bodyId > sys.equipment.maxBodies) sys.bodies.removeItemById(bodyId);
                             body.isActive = bodyId <= sys.equipment.maxBodies;
                         }
@@ -136,7 +144,7 @@ export class EquipmentMessage {
                             body = sys.bodies.getItemById(bodyId, bodyId <= sys.equipment.maxBodies);
                             sbody = state.temps.bodies.getItemById(bodyId, bodyId <= sys.equipment.maxBodies);
                             sbody.type = body.type = msg.extractPayloadByte(35);
-                            body.capacity = msg.extractPayloadByte(34) * 1000;
+                            body.capacity = readCapacity(34, 35);
                             if (body.isActive && bodyId > sys.equipment.maxBodies) sys.bodies.removeItemById(bodyId);
                             body.isActive = bodyId <= sys.equipment.maxBodies;
                         }
@@ -185,6 +193,7 @@ export class EquipmentMessage {
                         break;
                 }
                 break;
+            }
             case ControllerType.IntelliCom:
             case ControllerType.EasyTouch:
             case ControllerType.IntelliTouch:
