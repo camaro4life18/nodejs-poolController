@@ -861,18 +861,28 @@ export class IntelliCenterBoard extends SystemBoard {
         // we need to determine if anything needs to be removed or added before actually doing it.
         let modules: ExpansionModuleCollection = panel.modules;
         if (typeof inv === 'undefined') inv = { bodies: 0, circuits: 0, valves: 0, shared: false, covers: 0, chlorinators: 0, chemControllers: 0 };
-        // 
-        // v3.004+: expansion panel slot encoding matches the master panel (slot0 is HIGH nibble).
-        // Prefer firmware-gated v3 decoding, but also auto-detect v3 encoding using the protocol constraint
-        // that expansion panel slot0 must be a valid expansion card (3-7), similar to processMasterModules.
+        // v3.008 uses a different expansion-panel encoding than v1/v2.  Observed on Matthew's
+        // i10D + 2x i10X capture (Discussion #1171 / ISSUE-081):
+        //   byte15 = 0x02 (EXP1 populated with i10X)
+        //   byte17 = 0x00 (EXP2 empty)
+        //   byte19 = 0x02 (EXP3 populated with i10X)
+        // The byte is NOT nibble-packed like the master byte — the LOW byte carries a single
+        // expansion-panel wire id where 0x02 = i10X (valueMap id 6, named 'i10x').  ocpB is
+        // currently unused on observed v3 captures (always 0x00).  Route v3 through a dedicated
+        // decoder so we don't inherit the v1 nibble/slot shape that doesn't fit the wire data.
+        if (sys.equipment.isIntellicenterV3) {
+            this.processExpansionModulesV3(panel, ocpA, ocpB, inv);
+            return;
+        }
+        // v1/v2: expansion panel slot encoding matches the master panel (slot0 is HIGH nibble on v3 masters,
+        // but v1 had slot0 in the LOW nibble).  Keep the original auto-detect so any captured v1 expansion
+        // traffic continues to decode exactly as before.
         const hi = (ocpA & 0xF0) >> 4;
         const lo = (ocpA & 0x0F);
-        let useV3Order = sys.equipment.isIntellicenterV3;
-        if (!useV3Order) {
-            // If HIGH nibble looks like a valid expansion card (3-7) and LOW nibble is either empty (0) or non-personality (>7),
-            // treat this as v3 encoding even if the firmware gate isn't established yet.
-            if (hi >= 3 && hi <= 7 && (lo === 0 || lo > 7)) useV3Order = true;
-        }
+        let useV3Order = false;
+        // If HIGH nibble looks like a valid expansion card (3-7) and LOW nibble is either empty (0) or non-personality (>7),
+        // treat this as v3 encoding even if the firmware gate isn't established yet.
+        if (hi >= 3 && hi <= 7 && (lo === 0 || lo > 7)) useV3Order = true;
         let slot0 = useV3Order ? hi : lo;
         let slot1 = useV3Order ? lo : hi;
         let slot2 = (ocpB & 0xF0) >> 4;
@@ -969,6 +979,65 @@ export class IntelliCenterBoard extends SystemBoard {
             if (typeof mt.chlorinators !== 'undefined') inv.chlorinators += mt.chlorinators;
             if (typeof mt.chemControllers !== 'undefined') inv.chemControllers += mt.chemControllers;
         }
+    }
+    // v3.008+ expansion-panel decode.  The wire layout on v3 is not nibble-packed: each expansion byte
+    // (bytes 15/17/19 of Action 204) carries a single expansion-panel id.  Observed values so far:
+    //   0x00 = empty slot
+    //   0x02 = i10X expansion panel (valueMap id 6)
+    // Additional entries can be added as new hardware is observed in the wild.  Unknown non-zero values
+    // are logged and the panel is deactivated so we never silently mis-identify an expansion.
+    // Discussion #1171 / ISSUE-081.
+    private static readonly V3_EXPANSION_WIRE_TO_MAP_ID: Record<number, number> = {
+        0x02: 6   // i10X
+    };
+    private processExpansionModulesV3(panel: ExpansionPanel, ocpA: number, ocpB: number, inv: any) {
+        let modules: ExpansionModuleCollection = panel.modules;
+        if (typeof inv === 'undefined') inv = { bodies: 0, circuits: 0, valves: 0, shared: false, covers: 0, chlorinators: 0, chemControllers: 0 };
+        if (ocpB !== 0) {
+            logger.debug(`IntelliCenter v3 expansion panel reports ocpB=0x${ocpB.toString(16).padStart(2, '0')}; currently unmapped, ignoring.`);
+        }
+        if (ocpA === 0) {
+            // Empty slot — clear any previously seen modules.
+            modules.removeItemById(0);
+            modules.removeItemById(1);
+            modules.removeItemById(2);
+            modules.removeItemById(3);
+            panel.isActive = false;
+            return;
+        }
+        const mapId = IntelliCenterBoard.V3_EXPANSION_WIRE_TO_MAP_ID[ocpA];
+        if (typeof mapId === 'undefined') {
+            logger.warn(`IntelliCenter v3 expansion panel reports unknown wire id 0x${ocpA.toString(16).padStart(2, '0')}; deactivating panel. Please report this value so it can be catalogued.`);
+            modules.removeItemById(0);
+            modules.removeItemById(1);
+            modules.removeItemById(2);
+            modules.removeItemById(3);
+            panel.isActive = false;
+            return;
+        }
+        panel.isActive = true;
+        const mod = modules.getItemById(0, true);
+        const mt = this.valueMaps.expansionBoards.transform(mapId);
+        mod.name = mt.name;
+        mod.desc = mt.desc;
+        mod.type = mapId;
+        mod.part = mt.part;
+        mod.get().bodies = mt.bodies;
+        mod.get().circuits = mt.circuits;
+        mod.get().valves = mt.valves;
+        mod.get().covers = mt.covers;
+        mod.get().chlorinators = mt.chlorinators;
+        mod.get().chemControllers = mt.chemControllers;
+        if (typeof mt.bodies !== 'undefined') inv.bodies += mt.bodies;
+        if (typeof mt.circuits !== 'undefined') inv.circuits += mt.circuits;
+        if (typeof mt.valves !== 'undefined') inv.valves += mt.valves;
+        if (typeof mt.covers !== 'undefined') inv.covers += mt.covers;
+        if (typeof mt.chlorinators !== 'undefined') inv.chlorinators += mt.chlorinators;
+        if (typeof mt.chemControllers !== 'undefined') inv.chemControllers += mt.chemControllers;
+        // v3 layout does not currently populate slots 1-3 on expansion panels.
+        modules.removeItemById(1);
+        modules.removeItemById(2);
+        modules.removeItemById(3);
     }
     public get commandSourceAddress(): number { return this.getRegistrationAddress(); }
     public get commandDestAddress(): number { return sys.equipment.isIntellicenterV3 ? 16 : 15; }

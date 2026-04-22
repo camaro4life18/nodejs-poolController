@@ -97,14 +97,20 @@ export class EquipmentStateMessage {
         // [1,3] = i5+3s
         // [1,4] = i9+3s
         // [1,5] = i10+3d
-        // IntelliCenter v3.004 reports [3,2] for bytes [27,28]
+        // IntelliCenter v3.x reports model1=3 with model2 carrying the panel/expansion variant
+        // (same convention IntelliTouch used for the `[1, N]` family above).  Observed so far:
+        //   [3, 2] = v3.004+ i8PS / i10PS personality card only
+        //   [3, 3] = v3.008 i10D personality card + i10X expansion panels (Discussion #1171 / ISSUE-081)
+        // No IntelliTouch variant has ever reported model1=3, so `model1 === 3` is a safe
+        // single-check marker for IntelliCenter v3 regardless of which panel variant byte 28 carries.
         if ((model2 === 0 && (model1 === 23 || model1 >= 40)) ||
             (model2 === 2 && model1 == 0) ||
-            (model2 === 2 && model1 == 3)) {
+            (model1 === 3)) {
             state.equipment.controllerType = 'intellicenter';
             sys.board.modulesAcquired = false;
             sys.controllerType = ControllerType.IntelliCenter;
             logger.info(`Found Controller Board ${state.equipment.model || 'IntelliCenter'}, awaiting installed modules.`);
+            if (model1 === 3) logger.silly(`IntelliCenter v3 detected (panel variant byte28=${model2})`);
             EquipmentStateMessage.initIntelliCenter(msg);
         }
         else {
@@ -157,11 +163,25 @@ export class EquipmentStateMessage {
                 // Master = 13-14
                 // EXP1 = 15-16
                 // EXP2 = 17-18
-                let pc = msg.extractPayloadByte(40);
-                (sys.board as IntelliCenterBoard).initExpansionModules(msg.extractPayloadByte(13), msg.extractPayloadByte(14),
-                    pc & 0x01 ? msg.extractPayloadByte(15) : 0x00, pc & 0x01 ? msg.extractPayloadByte(16) : 0x00,
-                    pc & 0x02 ? msg.extractPayloadByte(17) : 0x00, pc & 0x02 ? msg.extractPayloadByte(18) : 0x00,
-                    pc & 0x04 ? msg.extractPayloadByte(19) : 0x00, pc & 0x04 ? msg.extractPayloadByte(20) : 0x00);
+                // EXP3 = 19-20
+                // Byte 40 (pc) was historically treated as an expansion-presence bitmask
+                // (bit 0 = EXP1, bit 1 = EXP2, bit 2 = EXP3) on v1.x firmware.  On v3.008
+                // byte 40 reports 0x50 on BOTH a single-panel i8PS (no expansions) and on an
+                // i10D + 2x i10X system (two expansions populated) — see ISSUE-081.  So for
+                // v3 we bypass the pc gate and pass the raw module bytes through; the
+                // board-level processExpansionModules decoder treats all-zero slot bytes as
+                // empty and deactivates those panels.
+                const isV3 = sys.equipment.isIntellicenterV3;
+                const pc = msg.extractPayloadByte(40);
+                const exp1A = isV3 || (pc & 0x01) ? msg.extractPayloadByte(15) : 0x00;
+                const exp1B = isV3 || (pc & 0x01) ? msg.extractPayloadByte(16) : 0x00;
+                const exp2A = isV3 || (pc & 0x02) ? msg.extractPayloadByte(17) : 0x00;
+                const exp2B = isV3 || (pc & 0x02) ? msg.extractPayloadByte(18) : 0x00;
+                const exp3A = isV3 || (pc & 0x04) ? msg.extractPayloadByte(19) : 0x00;
+                const exp3B = isV3 || (pc & 0x04) ? msg.extractPayloadByte(20) : 0x00;
+                (sys.board as IntelliCenterBoard).initExpansionModules(
+                    msg.extractPayloadByte(13), msg.extractPayloadByte(14),
+                    exp1A, exp1B, exp2A, exp2B, exp3A, exp3B);
                 sys.equipment.setEquipmentIds();
             }
             else return;
